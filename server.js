@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import multer from 'multer';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import {
   initWhatsApp,
@@ -18,8 +19,40 @@ import {
   notifyAdminOnInquiry,
   notifyUserOnInquiry,
   notifyUserWelcomeRegistration,
+  notifyUserStageSubmission,
+  notifyAdminOnPaymentSlip,
+  notifyUserOnPaymentSlip,
+  notifyAdminOnClientMessage,
+  notifyUserOnAdminMessage,
+  notifyUserOnDocumentIssued,
   ADMIN_PHONE
 } from './whatsappService.js';
+
+import {
+  generateOtp,
+  verifyOtp,
+  sendPasswordResetEmail,
+  sendWelcomeRegistrationEmail,
+  sendAdminRegistrationAlert,
+  sendLoginAlertEmail,
+  sendAdminLoginAlert,
+  sendAdminProfileUpdateAlert,
+  sendInquiryReceivedEmail,
+  sendInquiryAcknowledgementEmail,
+  sendAdminInquiryAlert,
+  sendStageSubmissionEmail,
+  sendAdminStageSubmissionAlert,
+  sendStageApprovalEmail,
+  sendStageRejectionEmail,
+  sendDocumentIssuedEmail,
+  sendDirectClientEmail,
+  sendAdminPaymentSlipAlert,
+  sendPaymentSlipReceivedEmail,
+  sendAdminClientMessageAlert,
+  sendClientReplyEmail,
+  sendAdminCredentialsEmail,
+  sendMailSafe
+} from './emailService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,6 +61,41 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Local JSON File Data Directory (Guarantees 100% offline & local data persistence)
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+function getLocalStore(table, fallback = []) {
+  try {
+    const file = path.join(DATA_DIR, `${table}.json`);
+    if (fs.existsSync(file)) {
+      const content = fs.readFileSync(file, 'utf8');
+      const parsed = JSON.parse(content);
+      return Array.isArray(parsed) || (parsed && typeof parsed === 'object') ? parsed : fallback;
+    }
+  } catch (e) {
+    console.warn(`Local store read notice (${table}):`, e.message);
+  }
+  return fallback;
+}
+
+function saveLocalStore(table, data) {
+  try {
+    const file = path.join(DATA_DIR, `${table}.json`);
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  } catch (e) {
+    console.warn(`Local store write notice (${table}):`, e.message);
+    return false;
+  }
+}
 
 // Initialize WhatsApp Baileys Engine (+40 728 744 478)
 initWhatsApp().catch(err => console.warn('WhatsApp initial start note:', err.message));
@@ -60,7 +128,6 @@ async function d1Query(sql, params = []) {
     }
     return { success: false, error: data.errors?.[0]?.message || 'D1 Query Error', results: [] };
   } catch (err) {
-    console.error('D1 Query Exception:', err);
     return { success: false, error: err.message, results: [] };
   }
 }
@@ -321,61 +388,90 @@ app.get('/whatsapp-scan', (req, res) => {
   `);
 });
 
-import { 
-  generateOtp, 
-  verifyOtp, 
-  sendPasswordResetEmail, 
-  sendWelcomeRegistrationEmail, 
-  sendAdminRegistrationAlert,
-  sendLoginAlertEmail,
-  sendAdminLoginAlert,
-  sendAdminProfileUpdateAlert,
-  sendInquiryReceivedEmail,
-  sendAdminInquiryAlert,
-  sendStageSubmissionEmail,
-  sendAdminStageSubmissionAlert,
-  sendStageApprovalEmail,
-  sendStageRejectionEmail,
-  sendDocumentIssuedEmail,
-  sendDirectClientEmail,
-  sendAdminPaymentSlipAlert,
-  sendAdminClientMessageAlert,
-  sendAdminCredentialsEmail
-} from './emailService.js';
 
-// Auto-seed primary Super Admin account into Cloudflare D1
+// Auto-seed Database Schema & primary Super Admin account into Cloudflare D1
 (async () => {
   try {
+    // 1. Initialize tables if not existing
+    await d1Query(`
+      CREATE TABLE IF NOT EXISTS accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT UNIQUE,
+        case_id TEXT,
+        email TEXT UNIQUE NOT NULL,
+        phone TEXT,
+        password TEXT NOT NULL,
+        first_name TEXT,
+        last_name TEXT,
+        nic_number TEXT,
+        passport_number TEXT,
+        country TEXT DEFAULT 'Sri Lanka',
+        address TEXT,
+        avatar_url TEXT,
+        role TEXT DEFAULT 'client',
+        status TEXT DEFAULT 'active',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await d1Query(`
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        case_id TEXT,
+        actor_name TEXT,
+        actor_role TEXT,
+        action TEXT NOT NULL,
+        details TEXT,
+        ip_address TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 2. Ensure Super Admin account exists
     await d1Query(
-      `INSERT INTO accounts (email, password, first_name, last_name, role)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(email) DO UPDATE SET password = excluded.password, role = 'admin'`,
-      ['thilankamahesh09@gmail.com', 'Thilanka2003@', 'Thilanka', 'Mahesh', 'admin']
+      `INSERT INTO accounts (user_id, email, password, first_name, last_name, role)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(email) DO UPDATE SET password = excluded.password, role = 'admin', user_id = excluded.user_id`,
+      ['ADMIN-SUPER-THILANKA', 'thilankamahesh09@gmail.com', 'Thilanka2003@', 'Thilanka', 'Mahesh', 'admin']
     );
     await d1Query(`DELETE FROM accounts WHERE LOWER(email) = 'admin@ccsrl.com'`);
     console.log('✅ Super Admin account verified in Cloudflare D1: thilankamahesh09@gmail.com');
   } catch (e) {
-    console.warn('Initial admin seed note:', e.message);
+    console.warn('Initial admin/schema seed note:', e.message);
   }
 })();
 
-// Helper: Generate Strong Unique Lifetime User ID (Immutable Permanent User Identifier)
+// Helper: Generate Strong Unique Lifetime User ID (Immutable Permanent User Identifier UID-2026-XXXX)
 async function generateLifetimeUserId() {
   try {
-    const res = await d1Query(`SELECT id FROM accounts WHERE role = 'client'`);
-    const results = res.results || [];
-    let maxNum = 0;
+    const res = await d1Query(`SELECT user_id, id FROM accounts`);
+    const results = (res.success && Array.isArray(res.results) && res.results.length > 0)
+      ? res.results
+      : getLocalStore('accounts', []);
+    let maxNum = 1000;
     results.forEach(r => {
-      const m = String(r.id).match(/UID-2026-(\d+)/i) || String(r.id).match(/CLIENT-(\d+)/i);
+      const val = r.user_id || r.userId || r.id;
+      const m = String(val).match(/UID-2026-(\d+)/i);
       if (m) {
         const n = parseInt(m[1], 10);
         if (n > maxNum) maxNum = n;
       }
     });
-    const nextNum = maxNum > 0 ? maxNum + 1 : Math.floor(1000 + Math.random() * 9000);
+    const localStoreAccs = getLocalStore('accounts', []);
+    localStoreAccs.forEach(r => {
+      const val = r.user_id || r.userId || r.id;
+      const m = String(val).match(/UID-2026-(\d+)/i);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (n > maxNum) maxNum = n;
+      }
+    });
+    const nextNum = maxNum + 1;
     return `UID-2026-${String(nextNum).padStart(4, '0')}`;
   } catch (e) {
-    return `UID-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+    return `UID-2026-${Math.floor(1001 + Math.random() * 8999)}`;
   }
 }
 
@@ -392,40 +488,54 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Phone number is required for registration.' });
     }
 
-    // Check if account with same phone exists
-    const existingPhone = await d1Query(`SELECT id FROM accounts WHERE REPLACE(phone, ' ', '') = ?`, [phone.replace(/\s+/g, '')]);
-    if (existingPhone.results && existingPhone.results.length > 0) {
-      return res.status(400).json({ success: false, error: 'An account with this phone number already exists. Please sign in.' });
-    }
-
-    // Check if account with same email exists (only if email is provided)
-    if (email) {
-      const existing = await d1Query(`SELECT id FROM accounts WHERE LOWER(TRIM(email)) = ?`, [email]);
-      if (existing.results && existing.results.length > 0) {
-        return res.status(400).json({ success: false, error: 'An account with this email address already exists. Please sign in.' });
-      }
-    }
-
-    // 1. Generate Strong Immutable Lifetime User ID
+    // 1. Generate / Resolve Immutable Lifetime User ID
     const permanentUserId = userData.userId || userData.id || await generateLifetimeUserId();
     const accountEmail = email || `${phone.replace(/[\s\+]/g, '')}@client.ccsrl.ro`;
 
-    await d1Query(
-      `INSERT INTO accounts (id, case_id, email, phone, password, first_name, last_name, role) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [permanentUserId, null, accountEmail, phone, userData.password, userData.firstName, userData.lastName || '', 'client']
-    );
+    // Persist to local JSON store
+    const localAccs = getLocalStore('accounts', []);
+    const newAccount = {
+      id: permanentUserId,
+      userId: permanentUserId,
+      case_id: null,
+      caseId: null,
+      email: accountEmail,
+      phone: phone,
+      password: userData.password || 'Client1234@',
+      first_name: userData.firstName || 'Client',
+      firstName: userData.firstName || 'Client',
+      last_name: userData.lastName || '',
+      lastName: userData.lastName || '',
+      role: 'client',
+      visa_type: userData.visaType || 'Family Reunification (D/VF)',
+      passport_number: userData.passportNumber || '',
+      created_at: new Date().toISOString()
+    };
+    const updatedAccs = [newAccount, ...localAccs.filter(a => (a.email || '').toLowerCase() !== accountEmail && a.phone !== phone)];
+    saveLocalStore('accounts', updatedAccs);
+
+    try {
+      await d1Query(
+        `INSERT INTO accounts (id, case_id, email, phone, password, first_name, last_name, role) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(email) DO UPDATE SET phone = excluded.phone, first_name = excluded.first_name, last_name = excluded.last_name`,
+        [permanentUserId, null, accountEmail, phone, userData.password || 'Client1234@', userData.firstName || 'Client', userData.lastName || '', 'client']
+      );
+    } catch (d1Err) {
+      console.warn('D1 Registration insert notice:', d1Err.message);
+    }
 
     // 2. Send official welcome email to client (if email provided) AND new registration alert to admin (ceyloncsrl@gmail.com)
     try {
       const emailTasks = [
         sendAdminRegistrationAlert(userData, 'Pending Stage 01 Submission')
       ];
-      if (email) {
+      if (email && email.includes('@')) {
         emailTasks.push(sendWelcomeRegistrationEmail(userData, null));
       }
-      await Promise.allSettled(emailTasks);
-      console.log(`✉️ Dispatched Registration Confirmation & Admin Alert for ${phone} / ${email || 'No Email'} (Account Created: ${permanentUserId})`);
+      Promise.allSettled(emailTasks).then(() => {
+        console.log(`✉️ Dispatched Registration Confirmation & Admin Alert for ${phone} / ${email || 'No Email'}`);
+      }).catch(console.warn);
     } catch (mailErr) {
       console.warn('Registration email dispatch notice:', mailErr.message);
     }
@@ -492,22 +602,43 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // 2. Check Cloudflare D1 accounts table for admin or client
+    // 2. Check Cloudflare D1 accounts table for admin or client with local store fallback
     const cleanPhone = query.replace(/\s+/g, '');
     const cleanNoPlus = query.replace(/[\s\+]/g, '');
-    const accResult = await d1Query(
-      `SELECT * FROM accounts 
-       WHERE LOWER(TRIM(email)) = ? 
-          OR phone = ? 
-          OR REPLACE(phone, ' ', '') = ? 
-          OR REPLACE(REPLACE(phone, ' ', ''), '+', '') = ?
-          OR LOWER(case_id) = ?
-          OR LOWER(id) = ?`,
-      [query, query, cleanPhone, cleanNoPlus, query, query]
-    );
+    let matched = null;
 
-    if (accResult.results && accResult.results.length > 0) {
-      const matched = accResult.results[0];
+    try {
+      const accResult = await d1Query(
+        `SELECT * FROM accounts 
+         WHERE LOWER(TRIM(email)) = ? 
+            OR phone = ? 
+            OR REPLACE(phone, ' ', '') = ? 
+            OR REPLACE(REPLACE(phone, ' ', ''), '+', '') = ?
+            OR LOWER(case_id) = ?
+            OR LOWER(id) = ?`,
+        [query, query, cleanPhone, cleanNoPlus, query, query]
+      );
+      if (accResult.results && accResult.results.length > 0) {
+        matched = accResult.results[0];
+      }
+    } catch(e) {}
+
+    if (!matched) {
+      const localAdmins = getLocalStore('admins', []);
+      const localAccs = getLocalStore('accounts', []);
+      const allLocal = [...localAdmins, ...localAccs];
+      matched = allLocal.find(a => 
+        (a.email && a.email.toLowerCase().trim() === query) ||
+        (a.phone && a.phone.replace(/\s+/g, '') === cleanPhone) ||
+        (a.phone && a.phone.replace(/[\s\+]/g, '') === cleanNoPlus) ||
+        (a.caseId && a.caseId.toLowerCase() === query) ||
+        (a.case_id && a.case_id.toLowerCase() === query) ||
+        (a.id && String(a.id).toLowerCase() === query) ||
+        (a.userId && String(a.userId).toLowerCase() === query)
+      );
+    }
+
+    if (matched) {
       if (String(matched.password || '').trim() !== (password || '').trim()) {
         return res.status(401).json({ success: false, error: 'Incorrect password entered. Please verify your credentials or use Forgot Password.' });
       }
@@ -515,35 +646,42 @@ app.post('/api/auth/login', async (req, res) => {
       const isAdminRole = ['admin', 'superadmin', 'staff', 'manager', 'consultant'].includes((matched.role || '').toLowerCase());
       
       let userCase = null;
-      if (matched.case_id) {
-        const caseResult = await d1Query(`SELECT * FROM cases WHERE case_id = ?`, [matched.case_id]);
-        userCase = caseResult.results?.[0] || null;
+      const targetCaseId = matched.case_id || matched.caseId;
+      if (targetCaseId) {
+        try {
+          const caseResult = await d1Query(`SELECT * FROM cases WHERE case_id = ?`, [targetCaseId]);
+          userCase = caseResult.results?.[0] || null;
+        } catch(e) {}
+        if (!userCase) {
+          const localCases = getLocalStore('cases', []);
+          userCase = localCases.find(c => (c.caseId || c.case_id || '').toLowerCase() === targetCaseId.toLowerCase()) || null;
+        }
       }
 
       // Dispatch login security notification email to client user
       if (matched.email && !isAdminRole) {
-        sendLoginAlertEmail(matched.email, matched.first_name).catch(console.warn);
+        sendLoginAlertEmail(matched.email, matched.first_name || matched.firstName).catch(console.warn);
         sendAdminLoginAlert(matched, userCase).catch(console.warn);
       }
 
       // Immutable Lifetime User ID resolution
       const lifetimeUserId = isAdminRole 
-        ? (matched.id || `ADMIN-${matched.id}`)
-        : (String(matched.id).startsWith('UID-') ? matched.id : `UID-2026-${String(matched.id).padStart(4, '0')}`);
+        ? (matched.id || matched.userId || `ADMIN-${matched.id}`)
+        : (String(matched.id || matched.userId).startsWith('UID-') ? (matched.id || matched.userId) : `UID-2026-${String(matched.id || matched.userId).padStart(4, '0')}`);
 
       return res.json({
         success: true,
         user: {
           id: lifetimeUserId,
           userId: lifetimeUserId,
-          caseId: matched.case_id || null,
-          firstName: matched.first_name || (isAdminRole ? 'Admin' : 'Client'),
-          lastName: matched.last_name || '',
+          caseId: targetCaseId || null,
+          firstName: matched.first_name || matched.firstName || (isAdminRole ? 'Admin' : 'Client'),
+          lastName: matched.last_name || matched.lastName || '',
           email: matched.email,
           username: matched.email,
           phone: matched.phone,
           role: isAdminRole ? 'admin' : (matched.role || 'client'),
-          roleTitle: matched.role === 'admin' ? 'Super Administrator' : (matched.role === 'staff' ? 'Legal Officer' : (matched.role || 'Client')),
+          roleTitle: matched.role === 'admin' ? 'Super Administrator' : (matched.role === 'staff' ? 'Legal Officer' : (matched.roleTitle || matched.role || 'Client')),
           isSuperAdmin: matched.role === 'superadmin' || matched.email === 'thilankamahesh09@gmail.com'
         },
         caseData: userCase
@@ -611,27 +749,44 @@ app.post('/api/auth/google', async (req, res) => {
       });
     }
 
-    // 2. Check if account already exists in Cloudflare D1 accounts table
-    const accResult = await d1Query(
-      `SELECT * FROM accounts WHERE LOWER(TRIM(email)) = ?`,
-      [userEmail]
-    );
+    // 2. Check if account already exists in Cloudflare D1 or local store
+    let matched = null;
+    try {
+      const accResult = await d1Query(
+        `SELECT * FROM accounts WHERE LOWER(TRIM(email)) = ?`,
+        [userEmail]
+      );
+      if (accResult.results && accResult.results.length > 0) {
+        matched = accResult.results[0];
+      }
+    } catch(e) {}
 
-    if (accResult.results && accResult.results.length > 0) {
-      const matched = accResult.results[0];
+    if (!matched) {
+      const localAccs = getLocalStore('accounts', []);
+      matched = localAccs.find(a => (a.email || '').toLowerCase().trim() === userEmail);
+    }
+
+    if (matched) {
       const isAdminRole = ['admin', 'superadmin', 'staff', 'manager', 'consultant'].includes((matched.role || '').toLowerCase());
       
       let userCase = null;
-      if (matched.case_id) {
-        const caseResult = await d1Query(`SELECT * FROM cases WHERE case_id = ?`, [matched.case_id]);
-        userCase = caseResult.results?.[0] || null;
+      const targetCaseId = matched.case_id || matched.caseId;
+      if (targetCaseId) {
+        try {
+          const caseResult = await d1Query(`SELECT * FROM cases WHERE case_id = ?`, [targetCaseId]);
+          userCase = caseResult.results?.[0] || null;
+        } catch(e) {}
+        if (!userCase) {
+          const localCases = getLocalStore('cases', []);
+          userCase = localCases.find(c => (c.caseId || c.case_id || '').toLowerCase() === targetCaseId.toLowerCase()) || null;
+        }
       }
 
       // Dispatch login security notification to user and admin
       if (matched.email) {
         try {
           await Promise.allSettled([
-            sendLoginAlertEmail(matched.email, matched.first_name || 'Client'),
+            sendLoginAlertEmail(matched.email, matched.first_name || matched.firstName || 'Client'),
             sendAdminLoginAlert(matched, userCase)
           ]);
           console.log(`✉️ Dispatched Google login alert emails for existing account: ${matched.email}`);
@@ -641,22 +796,22 @@ app.post('/api/auth/google', async (req, res) => {
       }
 
       const lifetimeUserId = isAdminRole 
-        ? (matched.id || `ADMIN-${matched.id}`) 
-        : (String(matched.id).startsWith('UID-') ? matched.id : `UID-2026-${String(matched.id).padStart(4, '0')}`);
+        ? (matched.id || matched.userId || `ADMIN-${matched.id}`) 
+        : (String(matched.id || matched.userId).startsWith('UID-') ? (matched.id || matched.userId) : `UID-2026-${String(matched.id || matched.userId).padStart(4, '0')}`);
 
       return res.json({
         success: true,
         user: {
           id: lifetimeUserId,
           userId: lifetimeUserId,
-          caseId: matched.case_id || null,
-          firstName: matched.first_name || (isAdminRole ? 'Admin' : 'Client'),
-          lastName: matched.last_name || '',
+          caseId: targetCaseId || null,
+          firstName: matched.first_name || matched.firstName || (isAdminRole ? 'Admin' : 'Client'),
+          lastName: matched.last_name || matched.lastName || '',
           email: matched.email,
           username: matched.email,
           phone: matched.phone || '+40 728 744 478',
           role: isAdminRole ? 'admin' : (matched.role || 'client'),
-          roleTitle: matched.role === 'admin' ? 'Super Administrator' : (matched.role === 'staff' ? 'Legal Officer' : (matched.role || 'Client')),
+          roleTitle: matched.role === 'admin' ? 'Super Administrator' : (matched.role === 'staff' ? 'Legal Officer' : (matched.roleTitle || matched.role || 'Client')),
           isSuperAdmin: matched.role === 'superadmin' || matched.email === 'thilankamahesh09@gmail.com',
           picture: userPicture || matched.picture
         },
@@ -671,12 +826,32 @@ app.post('/api/auth/google', async (req, res) => {
     const randomPassword = `GoogleAuth#${Math.random().toString(36).slice(-8)}`;
     const permanentUserId = await generateLifetimeUserId();
 
+    const localAccs = getLocalStore('accounts', []);
+    const newAccount = {
+      id: permanentUserId,
+      userId: permanentUserId,
+      case_id: null,
+      caseId: null,
+      email: userEmail,
+      phone: '+40 728 744 478',
+      password: randomPassword,
+      first_name: firstName,
+      firstName,
+      last_name: lastName,
+      lastName,
+      role: 'client',
+      visa_type: 'Family Reunification (D/VF)',
+      passport_number: '',
+      created_at: new Date().toISOString()
+    };
+    saveLocalStore('accounts', [newAccount, ...localAccs.filter(a => (a.email || '').toLowerCase() !== userEmail)]);
+
     // Insert into accounts in Cloudflare D1 with permanent id
-    await d1Query(
+    d1Query(
       `INSERT INTO accounts (id, case_id, email, phone, password, first_name, last_name, role) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [permanentUserId, null, userEmail, '+40 728 744 478', randomPassword, firstName, lastName, 'client']
-    );
+    ).catch(console.warn);
 
     const newUser = {
       id: permanentUserId,
@@ -743,14 +918,17 @@ app.get('/api/admins', async (req, res) => {
        ORDER BY id ASC`
     );
 
-    let admins = accRes.results || [];
+    let admins = (accRes.success && Array.isArray(accRes.results) && accRes.results.length > 0)
+      ? accRes.results
+      : getLocalStore('admins', []);
     
     // Ensure default superadmins are present
-    const hasThilanka = admins.some(a => a.email.toLowerCase() === 'thilankamahesh09@gmail.com');
+    const hasThilanka = admins.some(a => (a.email || '').toLowerCase() === 'thilankamahesh09@gmail.com');
     if (!hasThilanka) {
       admins.unshift({
         id: 'ADMIN-SUPER-THILANKA',
         email: 'thilankamahesh09@gmail.com',
+        username: 'thilankamahesh09@gmail.com',
         first_name: 'Thilanka',
         last_name: 'Mahesh',
         phone: '+94 77 123 4567',
@@ -763,7 +941,7 @@ app.get('/api/admins', async (req, res) => {
     }
 
     const formatted = admins.map(a => ({
-      id: a.id,
+      id: a.id || `ADMIN-${Date.now()}`,
       email: a.email,
       username: a.username || a.email,
       firstName: a.first_name || a.firstName || 'Admin',
@@ -771,14 +949,77 @@ app.get('/api/admins', async (req, res) => {
       fullName: `${a.first_name || a.firstName || ''} ${a.last_name || a.lastName || ''}`.trim() || 'Admin Officer',
       phone: a.phone || '+40 728 744 478',
       role: a.role || 'admin',
-      roleTitle: a.role === 'admin' ? 'Super Administrator' : (a.role === 'staff' ? 'Legal Officer' : a.role),
+      roleTitle: a.role === 'admin' ? 'Super Administrator' : (a.role === 'staff' ? 'Legal Officer' : (a.roleTitle || a.role)),
       password: a.password || '******',
-      isSuperAdmin: a.role === 'superadmin' || a.email?.toLowerCase() === 'thilankamahesh09@gmail.com',
+      isSuperAdmin: a.role === 'superadmin' || (a.email || '').toLowerCase() === 'thilankamahesh09@gmail.com',
       status: 'Active',
-      createdAt: a.created_at || new Date().toISOString()
+      createdAt: a.created_at || a.createdAt || new Date().toISOString()
     }));
 
+    saveLocalStore('admins', formatted);
     return res.json(formatted);
+  } catch (err) {
+    const localAdmins = getLocalStore('admins', []);
+    return res.json(localAdmins);
+  }
+});
+
+// =========================================================================
+// 2c. REGISTERED CLIENT ACCOUNTS ENDPOINTS
+// =========================================================================
+
+// Fetch all registered client accounts
+app.get('/api/accounts', async (req, res) => {
+  try {
+    const accRes = await d1Query(
+      `SELECT id, case_id, email, phone, first_name, last_name, role, created_at, visa_type, passport_number
+       FROM accounts 
+       WHERE role = 'client'
+       ORDER BY created_at DESC`
+    );
+
+    const accounts = (accRes.success && Array.isArray(accRes.results) && accRes.results.length > 0)
+      ? accRes.results
+      : getLocalStore('accounts', []);
+
+    const formatted = accounts.map((a, idx) => {
+      const uid = a.id || (String(a.userId || a.id).startsWith('UID-') ? (a.userId || a.id) : `UID-2026-${1001 + idx}`);
+      return {
+        id: uid,
+        userId: uid,
+        email: a.email || '',
+        phone: a.phone || '',
+        firstName: a.first_name || a.firstName || 'Client',
+        lastName: a.last_name || a.lastName || '',
+        role: a.role || 'client',
+        caseId: a.case_id || a.caseId || null,
+        visaType: a.visa_type || a.visaType || 'Family Reunification (D/VF)',
+        passportNumber: a.passport_number || a.passportNumber || '',
+        createdAt: a.created_at || a.createdAt || new Date().toISOString()
+      };
+    });
+
+    saveLocalStore('accounts', formatted);
+    return res.json(formatted);
+  } catch (err) {
+    const localAccs = getLocalStore('accounts', []);
+    return res.json(localAccs);
+  }
+});
+
+// Delete a client account
+app.delete('/api/accounts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (id) {
+      const localAccs = getLocalStore('accounts', []);
+      saveLocalStore('accounts', localAccs.filter(a => a.id !== id && a.userId !== id && (a.email || '').toLowerCase() !== String(id).toLowerCase()));
+      d1Query(
+        `DELETE FROM accounts WHERE (id = ? OR LOWER(email) = ? OR LOWER(case_id) = ?) AND role = 'client'`,
+        [id, id.toLowerCase(), id.toLowerCase()]
+      ).catch(console.warn);
+    }
+    return res.json({ success: true, id });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -796,19 +1037,6 @@ app.post('/api/admins', async (req, res) => {
     const normEmail = email.toLowerCase().trim();
     const adminRole = role || 'admin';
 
-    // Insert into Cloudflare D1 accounts table
-    await d1Query(
-      `INSERT INTO accounts (email, password, first_name, last_name, phone, role)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(email) DO UPDATE SET
-         password = excluded.password,
-         first_name = excluded.first_name,
-         last_name = excluded.last_name,
-         phone = excluded.phone,
-         role = excluded.role`,
-      [normEmail, password, firstName.trim(), (lastName || '').trim(), phone || '', adminRole]
-    );
-
     const newAdmin = {
       id: `ADMIN-${Date.now()}`,
       email: normEmail,
@@ -823,6 +1051,23 @@ app.post('/api/admins', async (req, res) => {
       status: 'Active',
       createdAt: new Date().toISOString()
     };
+
+    const localAdmins = getLocalStore('admins', []);
+    const updatedAdmins = [newAdmin, ...localAdmins.filter(a => (a.email || '').toLowerCase() !== normEmail)];
+    saveLocalStore('admins', updatedAdmins);
+
+    // Insert into Cloudflare D1 accounts table
+    d1Query(
+      `INSERT INTO accounts (email, password, first_name, last_name, phone, role)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(email) DO UPDATE SET
+         password = excluded.password,
+         first_name = excluded.first_name,
+         last_name = excluded.last_name,
+         phone = excluded.phone,
+         role = excluded.role`,
+      [normEmail, password, firstName.trim(), (lastName || '').trim(), phone || '', adminRole]
+    ).catch(console.warn);
 
     // Dispatch credentials email via Hostinger Webmail to the admin's email
     let emailDispatched = false;
@@ -860,6 +1105,21 @@ app.put('/api/admins/:id', async (req, res) => {
     const { id } = req.params;
     const { email, password, firstName, lastName, role, phone, sendUpdateEmail, creatorName } = req.body;
 
+    const localAdmins = getLocalStore('admins', []);
+    const idx = localAdmins.findIndex(a => a.id === id || (a.email && a.email.toLowerCase() === String(id).toLowerCase()));
+    if (idx >= 0) {
+      localAdmins[idx] = {
+        ...localAdmins[idx],
+        ...(email ? { email: email.toLowerCase() } : {}),
+        ...(password ? { password } : {}),
+        ...(firstName ? { firstName: firstName.trim(), first_name: firstName.trim() } : {}),
+        ...(lastName !== undefined ? { lastName: lastName.trim(), last_name: lastName.trim() } : {}),
+        ...(phone !== undefined ? { phone } : {}),
+        ...(role ? { role, roleTitle: role === 'admin' ? 'Super Administrator' : (role === 'staff' ? 'Legal Officer' : role) } : {})
+      };
+      saveLocalStore('admins', localAdmins);
+    }
+
     const updates = [];
     const params = [];
 
@@ -871,7 +1131,7 @@ app.put('/api/admins/:id', async (req, res) => {
 
     if (updates.length > 0) {
       params.push(id);
-      await d1Query(`UPDATE accounts SET ${updates.join(', ')} WHERE id = ? OR LOWER(email) = ?`, [...params, id.toLowerCase()]);
+      d1Query(`UPDATE accounts SET ${updates.join(', ')} WHERE id = ? OR LOWER(email) = ?`, [...params, id.toLowerCase()]).catch(console.warn);
     }
 
     if (sendUpdateEmail && email && password) {
@@ -881,11 +1141,11 @@ app.put('/api/admins/:id', async (req, res) => {
         firstName: firstName || 'Admin',
         lastName: lastName || '',
         role: role || 'Administrator',
-        creatorName: creatorName || 'Super Admin'
+        creatorName: creatorName || 'Thilanka Mahesh (Super Admin)'
       }).catch(console.warn);
     }
 
-    return res.json({ success: true, message: 'Admin account updated successfully!' });
+    return res.json({ success: true, message: 'Admin account updated successfully.' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -901,8 +1161,11 @@ app.delete('/api/admins/:id', async (req, res) => {
       return res.status(400).json({ error: 'Primary Super Administrator account cannot be deleted.' });
     }
 
-    await d1Query(`DELETE FROM accounts WHERE id = ? OR LOWER(email) = ?`, [id, String(id).toLowerCase()]);
-    return res.json({ success: true, message: 'Admin account removed successfully.' });
+    const localAdmins = getLocalStore('admins', []);
+    saveLocalStore('admins', localAdmins.filter(a => a.id !== id && (a.email || '').toLowerCase() !== String(id).toLowerCase()));
+
+    d1Query(`DELETE FROM accounts WHERE (id = ? OR LOWER(email) = ?) AND LOWER(email) != 'thilankamahesh09@gmail.com'`, [id, id.toLowerCase()]).catch(console.warn);
+    return res.json({ success: true, id, message: 'Admin account removed successfully.' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1007,80 +1270,88 @@ app.get('/api/cases', async (req, res) => {
     const casesList = casesResult.results || [];
     const docsList = docsResult.results || [];
 
-    const formatted = casesList.map(c => {
-      const parsedStages = safeParseArray(c.stages, []);
-      const parsedFees = safeParseObject(c.fee_breakdown, {});
-      const parsedMsgs = safeParseArray(c.messages, []);
+    if (casesList.length > 0) {
+      const formatted = casesList.map(c => {
+        const parsedStages = safeParseArray(c.stages, []);
+        const parsedFees = safeParseObject(c.fee_breakdown, {});
+        const parsedMsgs = safeParseArray(c.messages, []);
 
-      return {
-        caseId: c.case_id,
-        id: c.id,
-        title: c.title,
-        visaType: c.visa_type,
-        clientName: c.client_name,
-        firstName: c.first_name,
-        lastName: c.last_name,
-        email: c.email,
-        phone: c.phone,
-        foreignPhone: c.foreign_phone,
-        romanianPhone: c.romanian_phone,
-        sriLankanAddress: c.sri_lankan_address,
-        country: c.country,
-        romaniaCity: c.romania_city,
-        nicNumber: c.nic_number,
-        dateOfBirth: c.date_of_birth,
-        arrivedDate: c.arrived_date,
-        passportNumber: c.passport_number,
-        passportIssueDate: c.passport_issue_date,
-        passportExpiry: c.passport_expiry,
-        birthLocation: c.birth_location,
-        trcCnpNumber: c.trc_cnp_number,
-        sponsorMother: c.sponsor_mother,
-        sponsorFather: c.sponsor_father,
-        hasSpouse: c.has_spouse,
-        spouseName: c.spouse_name,
-        spousePassport: c.spouse_passport,
-        spousePassportIssue: c.spouse_passport_issue,
-        spousePassportExpiry: c.spouse_passport_expiry,
-        spouseBirthLocation: c.spouse_birth_location,
-        spouseMother: c.spouse_mother,
-        spouseFather: c.spouse_father,
-        isDivorced: c.is_divorced,
-        childrenCount: c.children_count,
-        hasMother: c.has_mother,
-        hasFather: c.has_father,
-        trcValid15Months: c.trc_valid_15_months,
-        applicantsSummary: c.applicants_summary,
-        currentStageNumber: c.current_stage_number || 1,
-        currentStageIndex: c.current_stage_index || 0,
-        stages: parsedStages,
-        feeBreakdown: parsedFees,
-        messages: parsedMsgs,
-        password: c.password,
-        createdDate: c.created_at ? c.created_at.split(' ')[0] : new Date().toISOString().split('T')[0],
-        documents: docsList.filter(d => d.case_id && c.case_id && String(d.case_id).trim().toLowerCase() === String(c.case_id).trim().toLowerCase()).map(d => ({
-          id: d.id,
-          name: d.name,
-          category: d.category,
-          fileName: d.file_name,
-          file_name: d.file_name,
-          fileUrl: d.file_url,
-          file_url: d.file_url,
-          fileSize: d.file_size,
-          file_size: d.file_size,
-          uploadDate: d.upload_date,
-          status: d.status,
-          uploadedBy: d.uploaded_by,
-          stageNumber: d.stage_number,
-          note: d.note,
-          customContent: d.custom_content
-        }))
-      };
-    });
+        return {
+          caseId: c.case_id,
+          id: c.id,
+          title: c.title,
+          visaType: c.visa_type,
+          clientName: c.client_name,
+          firstName: c.first_name,
+          lastName: c.last_name,
+          email: c.email,
+          phone: c.phone,
+          foreignPhone: c.foreign_phone,
+          romanianPhone: c.romanian_phone,
+          sriLankanAddress: c.sri_lankan_address,
+          country: c.country,
+          romaniaCity: c.romania_city,
+          nicNumber: c.nic_number,
+          dateOfBirth: c.date_of_birth,
+          arrivedDate: c.arrived_date,
+          passportNumber: c.passport_number,
+          passportIssueDate: c.passport_issue_date,
+          passportExpiry: c.passport_expiry,
+          birthLocation: c.birth_location,
+          trcCnpNumber: c.trc_cnp_number,
+          sponsorMother: c.sponsor_mother,
+          sponsorFather: c.sponsor_father,
+          hasSpouse: c.has_spouse,
+          spouseName: c.spouse_name,
+          spousePassport: c.spouse_passport,
+          spousePassportIssue: c.spouse_passport_issue,
+          spousePassportExpiry: c.spouse_passport_expiry,
+          spouseBirthLocation: c.spouse_birth_location,
+          spouseMother: c.spouse_mother,
+          spouseFather: c.spouse_father,
+          isDivorced: c.is_divorced,
+          childrenCount: c.children_count,
+          hasMother: c.has_mother,
+          hasFather: c.has_father,
+          trcValid15Months: c.trc_valid_15_months,
+          applicantsSummary: c.applicants_summary,
+          currentStageNumber: c.current_stage_number || 1,
+          currentStageIndex: c.current_stage_index || 0,
+          stages: parsedStages,
+          feeBreakdown: parsedFees,
+          messages: parsedMsgs,
+          password: c.password,
+          createdDate: c.created_at ? c.created_at.split(' ')[0] : new Date().toISOString().split('T')[0],
+          documents: docsList.filter(d => d.case_id && c.case_id && String(d.case_id).trim().toLowerCase() === String(c.case_id).trim().toLowerCase()).map(d => ({
+            id: d.id,
+            name: d.name,
+            category: d.category,
+            fileName: d.file_name,
+            file_name: d.file_name,
+            fileUrl: d.file_url,
+            file_url: d.file_url,
+            fileSize: d.file_size,
+            file_size: d.file_size,
+            uploadDate: d.upload_date,
+            status: d.status,
+            uploadedBy: d.uploaded_by,
+            stageNumber: d.stage_number,
+            note: d.note,
+            customContent: d.custom_content
+          }))
+        };
+      });
 
-    return res.json(normalizeCases(formatted));
+      const normalized = normalizeCases(formatted);
+      saveLocalStore('cases', normalized);
+      return res.json(normalized);
+    }
+
+    const localCases = getLocalStore('cases', []);
+    return res.json(normalizeCases(localCases));
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    const localCases = getLocalStore('cases', []);
+    return res.json(normalizeCases(localCases));
   }
 });
 
@@ -1259,8 +1530,9 @@ app.post('/api/cases/initialize-stage1', upload.any(), async (req, res) => {
     );
 
     // 4. Process Stage 01 uploaded files & insert into documents table
-    // 4. Process Stage 01 uploaded files & insert into documents table
     let uploadedFilesList = [];
+    const localDocs = getLocalStore('documents', []);
+
     if (req.files && Array.isArray(req.files) && req.files.length > 0) {
       for (const file of req.files) {
         const fn = (file.fieldname || '').toLowerCase();
@@ -1284,22 +1556,63 @@ app.post('/api/cases/initialize-stage1', upload.any(), async (req, res) => {
         else if (fn === 'doc_civil') docName = 'Original Civil Certificates (Birth & Marriage)';
         const storageKey = `${caseId}/stage1_${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
         let publicUrl = null;
+        
+        // Save local copy to UPLOADS_DIR
+        try {
+          const localFilePath = path.join(UPLOADS_DIR, `${caseId}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+          fs.writeFileSync(localFilePath, file.buffer);
+          const localKeyPath = path.join(UPLOADS_DIR, storageKey.replace(/[\/\\]/g, '_'));
+          fs.writeFileSync(localKeyPath, file.buffer);
+        } catch (diskErr) {
+          console.warn('Local disk file save notice:', diskErr.message);
+        }
+
         try {
           const r2Command = new PutObjectCommand({
             Bucket: R2_BUCKET,
             Key: storageKey,
             Body: file.buffer,
             ContentType: file.mimetype || 'application/pdf',
-            Metadata: { caseId, docName, uploadedBy: 'client' }
+            Metadata: { 
+              caseId: String(caseId), 
+              docName: String(docName || 'Document').replace(/[^\x20-\x7E]/g, '_'), 
+              uploadedBy: 'client' 
+            }
           });
           await r2Client.send(r2Command);
           publicUrl = `/api/documents/stream?key=${encodeURIComponent(storageKey)}`;
         } catch (r2Err) {
           console.warn('R2 file save notice:', r2Err.message);
+          publicUrl = `/api/documents/stream?key=${encodeURIComponent(storageKey)}`;
         }
 
         const docId = `doc-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-        await d1Query(
+        const docObj = {
+          id: docId,
+          case_id: caseId,
+          caseId: caseId,
+          name: docName,
+          category: 'Stage 01',
+          file_name: file.originalname,
+          fileName: file.originalname,
+          file_url: publicUrl,
+          fileUrl: publicUrl,
+          file_size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+          fileSize: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+          upload_date: new Date().toISOString().split('T')[0],
+          uploadDate: new Date().toISOString().split('T')[0],
+          status: 'under_review',
+          uploaded_by: 'client',
+          uploadedBy: 'client',
+          stage_number: 1,
+          stageNumber: 1,
+          uploadKey: fn || null,
+          key: fn || null,
+          note: 'Stage 01 Initial Document'
+        };
+        localDocs.push(docObj);
+
+        d1Query(
           `INSERT INTO documents (id, case_id, name, category, file_name, file_url, file_size, upload_date, status, uploaded_by, stage_number, note)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
@@ -1316,7 +1629,8 @@ app.post('/api/cases/initialize-stage1', upload.any(), async (req, res) => {
             1,
             'Stage 01 Initial Document'
           ]
-        );
+        ).catch(console.warn);
+
         uploadedFilesList.push({ name: docName, fileName: file.originalname });
       }
     }
@@ -1331,7 +1645,30 @@ app.post('/api/cases/initialize-stage1', upload.any(), async (req, res) => {
     if ((!req.files || req.files.length === 0) && parsedDocuments.length > 0) {
       for (const doc of parsedDocuments) {
         const docId = `doc-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-        await d1Query(
+        const docObj = {
+          id: docId,
+          case_id: caseId,
+          caseId: caseId,
+          name: doc.name || 'Stage 01 Document',
+          category: 'Stage 01',
+          file_name: doc.fileName || `${(doc.name || 'document').replace(/\s+/g, '_')}.pdf`,
+          fileName: doc.fileName || `${(doc.name || 'document').replace(/\s+/g, '_')}.pdf`,
+          file_url: doc.fileUrl || null,
+          fileUrl: doc.fileUrl || null,
+          file_size: doc.fileSize || '2.4 MB',
+          fileSize: doc.fileSize || '2.4 MB',
+          upload_date: new Date().toISOString().split('T')[0],
+          uploadDate: new Date().toISOString().split('T')[0],
+          status: 'under_review',
+          uploaded_by: doc.uploadedBy || 'client',
+          uploadedBy: doc.uploadedBy || 'client',
+          stage_number: 1,
+          stageNumber: 1,
+          note: 'Stage 01 Initial Document'
+        };
+        localDocs.push(docObj);
+
+        d1Query(
           `INSERT INTO documents (id, case_id, name, category, file_name, file_url, file_size, upload_date, status, uploaded_by, stage_number, note)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
@@ -1348,17 +1685,97 @@ app.post('/api/cases/initialize-stage1', upload.any(), async (req, res) => {
             1,
             'Stage 01 Initial Document'
           ]
-        );
+        ).catch(console.warn);
+
         uploadedFilesList.push({ name: doc.name, fileName: doc.fileName });
       }
     }
 
+    saveLocalStore('documents', localDocs);
+
+    // Build the initialized case object and save immediately to local cases store
+    const fullNewCase = {
+      caseId,
+      case_id: caseId,
+      id: caseId,
+      title: `Romania ${visaType} Dossier`,
+      visaType,
+      visa_type: visaType,
+      clientName: fullName,
+      client_name: fullName,
+      firstName,
+      first_name: firstName,
+      lastName,
+      last_name: lastName,
+      email,
+      phone,
+      foreignPhone: data.foreignPhone || phone,
+      foreign_phone: data.foreignPhone || phone,
+      romanianPhone: data.romanianPhone || "+40 728 744 478",
+      romanian_phone: data.romanianPhone || "+40 728 744 478",
+      sriLankanAddress: data.sriLankanAddress || "Sri Lanka",
+      sri_lankan_address: data.sriLankanAddress || "Sri Lanka",
+      country: data.country || "Sri Lanka",
+      romaniaCity: data.romaniaCity || "Bucharest",
+      romania_city: data.romaniaCity || "Bucharest",
+      nicNumber: data.nicNumber || "",
+      nic_number: data.nicNumber || "",
+      dateOfBirth: data.dateOfBirth || "1992-05-14",
+      date_of_birth: data.dateOfBirth || "1992-05-14",
+      arrivedDate: data.arrivedDate || new Date().toISOString().split('T')[0],
+      arrived_date: data.arrivedDate || new Date().toISOString().split('T')[0],
+      passportNumber: data.passportNumber || ("N" + Math.floor(1000000 + Math.random() * 9000000)),
+      passport_number: data.passportNumber || ("N" + Math.floor(1000000 + Math.random() * 9000000)),
+      passportIssueDate: data.passportIssueDate || "2024-01-01",
+      passport_issue_date: data.passportIssueDate || "2024-01-01",
+      passportExpiry: data.passportExpiry || "2034-01-01",
+      passport_expiry: data.passportExpiry || "2034-01-01",
+      birthLocation: data.birthLocation || "Colombo, Sri Lanka",
+      birth_location: data.birthLocation || "Colombo, Sri Lanka",
+      trcCnpNumber: data.trcCnpNumber || "Pending Registration",
+      trc_cnp_number: data.trcCnpNumber || "Pending Registration",
+      hasSpouse: data.hasSpouse || 'No',
+      has_spouse: data.hasSpouse || 'No',
+      spouseName: data.spouseName || '',
+      spouse_name: data.spouseName || '',
+      spousePassport: data.spousePassport || '',
+      spouse_passport: data.spousePassport || '',
+      childrenCount: parseInt(data.childrenCount || 0),
+      children_count: parseInt(data.childrenCount || 0),
+      applicantsSummary: data.applicantsSummary || `${data.hasSpouse === 'Yes' ? 'Spouse' : 'Single'} Children: ${data.childrenCount || 0}`,
+      applicants_summary: data.applicantsSummary || `${data.hasSpouse === 'Yes' ? 'Spouse' : 'Single'} Children: ${data.childrenCount || 0}`,
+      currentStageNumber: 1,
+      current_stage_number: 1,
+      currentStageIndex: 0,
+      current_stage_index: 0,
+      stages,
+      feeBreakdown,
+      fee_breakdown: feeBreakdown,
+      messages,
+      password: data.password || 'ClientAuth#2026',
+      createdDate: new Date().toISOString().split('T')[0],
+      created_at: new Date().toISOString()
+    };
+
+    const localCases = getLocalStore('cases', []);
+    const updatedCases = [fullNewCase, ...localCases.filter(c => (c.caseId || c.case_id) !== caseId)];
+    saveLocalStore('cases', updatedCases);
+
     // 5. Update accounts table linking case_id
+    const localAccs = getLocalStore('accounts', []);
+    const updatedAccounts = localAccs.map(acc => {
+      if ((email && (acc.email || '').toLowerCase() === email) || (phone && (acc.phone || '').replace(/\s+/g, '') === phone.replace(/\s+/g, ''))) {
+        return { ...acc, caseId, case_id: caseId };
+      }
+      return acc;
+    });
+    saveLocalStore('accounts', updatedAccounts);
+
     if (email) {
-      await d1Query(`UPDATE accounts SET case_id = ? WHERE LOWER(TRIM(email)) = ?`, [caseId, email]);
+      d1Query(`UPDATE accounts SET case_id = ? WHERE LOWER(TRIM(email)) = ?`, [caseId, email]).catch(console.warn);
     }
     if (phone) {
-      await d1Query(`UPDATE accounts SET case_id = ? WHERE REPLACE(phone, ' ', '') = ?`, [caseId, phone.replace(/\s+/g, '')]);
+      d1Query(`UPDATE accounts SET case_id = ? WHERE REPLACE(phone, ' ', '') = ?`, [caseId, phone.replace(/\s+/g, '')]).catch(console.warn);
     }
 
     // 6. Send official emails to client and admin
@@ -1373,8 +1790,13 @@ app.post('/api/cases/initialize-stage1', upload.any(), async (req, res) => {
       console.warn('Stage 1 email dispatch notice:', mailErr.message);
     }
 
-    // 6.1 WhatsApp Admin Alerts (+40 728 744 478)
+    // 6.1 WhatsApp Admin & Client Alerts (+40 728 744 478)
     try {
+      const docSummaryList = uploadedFilesList.length > 0 
+        ? uploadedFilesList.map(d => `• ${d.name || d.fileName}`).join('\n')
+        : '• Passport Scan\n• Romanian TRC Permit\n• Civil Certificates';
+
+      // 1. WhatsApp Alert to Admin
       notifyAdminOnStageSubmission({
         userId: data.userId || data.id || 'UID-2026',
         userName: fullName,
@@ -1385,48 +1807,34 @@ app.post('/api/cases/initialize-stage1', upload.any(), async (req, res) => {
         stageNumber: 1,
         stageTitle: 'Required Documents',
         docCount: uploadedFilesList.length || 3,
-        documentsList: uploadedFilesList.length > 0 
-          ? uploadedFilesList.map(d => `• ${d.name || d.fileName}`).join('\n')
-          : '• Passport Scan\n• TRC Permit\n• Civil Certificates'
+        documentsList: docSummaryList
       }).catch(err => console.warn('WhatsApp Admin Stage 1 Submission Alert note:', err.message));
+
+      // 2. WhatsApp Submission Receipt to Client
+      if (phone && phone !== 'Not provided') {
+        notifyUserStageSubmission({
+          userPhone: phone,
+          userName: fullName,
+          caseId,
+          userId: data.userId || data.id || 'UID-2026',
+          stageNumber: 1,
+          stageTitle: 'Required Documents',
+          documentsList: docSummaryList
+        }).catch(err => console.warn('WhatsApp Client Stage 1 Receipt note:', err.message));
+      }
     } catch (waErr) {
       console.warn('WhatsApp stage 1 dispatch error:', waErr.message);
     }
 
     // 7. Fetch all saved documents for this initialized case
-    const savedDocsRes = await d1Query(`SELECT * FROM documents WHERE case_id = ? ORDER BY created_at ASC, id ASC`, [caseId]);
-    const savedDocs = (savedDocsRes.results || []).map(d => ({
-      id: d.id,
-      name: d.name,
-      category: d.category,
-      fileName: d.file_name,
-      fileUrl: d.file_url,
-      fileSize: d.file_size,
-      uploadDate: d.upload_date,
-      status: d.status,
-      uploadedBy: d.uploaded_by,
-      stageNumber: d.stage_number,
-      note: d.note,
-      size: d.file_size
-    }));
+    const savedDocs = localDocs.filter(d => (d.case_id || d.caseId) === caseId);
 
     return res.json({
       success: true,
       caseId,
       message: `Official Case Dossier ${caseId} created and Stage 01 documents submitted!`,
       case: {
-        caseId,
-        title: `Romania ${visaType} Dossier`,
-        visaType,
-        clientName: fullName,
-        firstName,
-        lastName,
-        email,
-        phone,
-        currentStageNumber: 1,
-        stages,
-        feeBreakdown,
-        messages,
+        ...fullNewCase,
         documents: savedDocs
       }
     });
@@ -1443,7 +1851,13 @@ app.post('/api/cases', async (req, res) => {
     const feesJson = JSON.stringify(c.feeBreakdown || {});
     const msgsJson = JSON.stringify(c.messages || []);
 
-    await d1Query(
+    // Save immediately to local cases store
+    const localCases = getLocalStore('cases', []);
+    const normalizedNew = normalizeCase(c);
+    const updatedCases = [normalizedNew, ...localCases.filter(item => (item.caseId || item.case_id) !== c.caseId)];
+    saveLocalStore('cases', updatedCases);
+
+    d1Query(
       `INSERT INTO cases (
         case_id, title, visa_type, client_name, first_name, last_name, email, phone,
         foreign_phone, romanian_phone, sri_lankan_address, country, romania_city, nic_number,
@@ -1542,7 +1956,7 @@ app.post('/api/cases', async (req, res) => {
         msgsJson,
         c.password || null
       ]
-    );
+    ).catch(console.warn);
 
     return res.json({ success: true, caseId: c.caseId });
   } catch (err) {
@@ -1554,6 +1968,19 @@ app.put('/api/cases/:caseId', async (req, res) => {
   try {
     const { caseId } = req.params;
     const updates = req.body;
+
+    // Update in local JSON store
+    const localCases = getLocalStore('cases', []);
+    const idx = localCases.findIndex(c => (c.caseId || c.case_id) === caseId || String(c.caseId || c.case_id).toLowerCase() === String(caseId).toLowerCase());
+    if (idx >= 0) {
+      localCases[idx] = {
+        ...localCases[idx],
+        ...updates,
+        caseId: localCases[idx].caseId || caseId,
+        case_id: localCases[idx].case_id || caseId
+      };
+      saveLocalStore('cases', localCases);
+    }
 
     const fields = [];
     const params = [];
@@ -1614,19 +2041,19 @@ app.put('/api/cases/:caseId', async (req, res) => {
     params.push(caseId);
 
     if (fields.length > 1) {
-      await d1Query(`UPDATE cases SET ${fields.join(', ')} WHERE case_id = ?`, params);
+      d1Query(`UPDATE cases SET ${fields.join(', ')} WHERE case_id = ?`, params).catch(console.warn);
     }
 
     // Keep accounts table in sync with updated phone and name
     const newPhone = (updates.phone || updates.foreignPhone || updates.romanianPhone || '').trim();
     if (newPhone) {
-      await d1Query(`UPDATE accounts SET phone = ? WHERE case_id = ?`, [newPhone, caseId]);
+      d1Query(`UPDATE accounts SET phone = ? WHERE case_id = ?`, [newPhone, caseId]).catch(console.warn);
     }
     if (updates.firstName || updates.lastName) {
       const fName = (updates.firstName || '').trim();
       const lName = (updates.lastName || '').trim();
       if (fName) {
-        await d1Query(`UPDATE accounts SET first_name = ?, last_name = ? WHERE case_id = ?`, [fName, lName, caseId]);
+        d1Query(`UPDATE accounts SET first_name = ?, last_name = ? WHERE case_id = ?`, [fName, lName, caseId]).catch(console.warn);
       }
     }
 
@@ -1644,35 +2071,121 @@ app.put('/api/cases/:caseId', async (req, res) => {
 // Delete All Cases and associated client data
 app.delete('/api/cases', async (req, res) => {
   try {
-    await d1Query(`DELETE FROM documents`);
-    await d1Query(`DELETE FROM cases`);
-    await d1Query(`DELETE FROM accounts WHERE role = 'client'`);
+    saveLocalStore('cases', []);
+    saveLocalStore('documents', []);
+    const localAccs = getLocalStore('accounts', []);
+    saveLocalStore('accounts', localAccs.filter(a => a.role !== 'client'));
+
+    d1Query(`DELETE FROM documents`).catch(console.warn);
+    d1Query(`DELETE FROM cases`).catch(console.warn);
+    d1Query(`DELETE FROM accounts WHERE role = 'client'`).catch(console.warn);
     return res.json({ success: true, message: 'All cases and client data permanently wiped from database.' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
 });
 
-// Delete Case and associated records
+// Delete Case and associated records (Preserves User Profile & Account)
 app.delete('/api/cases/:caseId', async (req, res) => {
   try {
     const { caseId } = req.params;
     const cleanId = String(caseId).trim();
 
-    // Find associated email if any
-    const caseRes = await d1Query(`SELECT email FROM cases WHERE case_id = ? OR LOWER(case_id) = LOWER(?)`, [cleanId, cleanId]);
-    const caseEmail = caseRes.results?.[0]?.email;
-
-    await d1Query(`DELETE FROM documents WHERE case_id = ? OR LOWER(case_id) = LOWER(?)`, [cleanId, cleanId]);
-    await d1Query(`DELETE FROM cases WHERE case_id = ? OR LOWER(case_id) = LOWER(?)`, [cleanId, cleanId]);
+    // 1. Local JSON removal of case and its documents
+    const localCases = getLocalStore('cases', []);
+    saveLocalStore('cases', localCases.filter(c => (c.caseId || c.case_id) !== cleanId && String(c.caseId || c.case_id).toLowerCase() !== cleanId.toLowerCase()));
     
-    if (caseEmail) {
-      await d1Query(`DELETE FROM accounts WHERE (case_id = ? OR LOWER(case_id) = LOWER(?) OR LOWER(email) = LOWER(?)) AND role = 'client'`, [cleanId, cleanId, String(caseEmail).trim().toLowerCase()]);
-    } else {
-      await d1Query(`DELETE FROM accounts WHERE (case_id = ? OR LOWER(case_id) = LOWER(?)) AND role = 'client'`, [cleanId, cleanId]);
+    const localDocs = getLocalStore('documents', []);
+    saveLocalStore('documents', localDocs.filter(d => (d.case_id || d.caseId) !== cleanId && String(d.case_id || d.caseId).toLowerCase() !== cleanId.toLowerCase()));
+
+    // 2. Unlink active caseId on account without deleting the account
+    const localAccs = getLocalStore('accounts', []);
+    const updatedAccs = localAccs.map(a => {
+      if ((a.caseId || a.case_id) === cleanId) {
+        return { ...a, caseId: null, case_id: null };
+      }
+      return a;
+    });
+    saveLocalStore('accounts', updatedAccs);
+
+    // 3. Database cleanup (Cases and Documents only)
+    d1Query(`DELETE FROM documents WHERE case_id = ? OR LOWER(case_id) = LOWER(?)`, [cleanId, cleanId]).catch(console.warn);
+    d1Query(`DELETE FROM cases WHERE case_id = ? OR LOWER(case_id) = LOWER(?)`, [cleanId, cleanId]).catch(console.warn);
+    d1Query(`UPDATE accounts SET case_id = NULL WHERE case_id = ? OR LOWER(case_id) = LOWER(?)`, [cleanId, cleanId]).catch(console.warn);
+
+    return res.json({ success: true, caseId: cleanId, message: 'Case dossier removed. User account preserved.' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================================
+// 7b. AUDIT LOGS & USER ACTIVITY ENDPOINTS
+// =========================================================================
+app.get('/api/audit-logs', async (req, res) => {
+  try {
+    const { userId, caseId } = req.query;
+    let sql = `SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 200`;
+    let params = [];
+    if (userId && caseId) {
+      sql = `SELECT * FROM audit_logs WHERE user_id = ? OR case_id = ? ORDER BY created_at DESC LIMIT 200`;
+      params = [userId, caseId];
+    } else if (userId) {
+      sql = `SELECT * FROM audit_logs WHERE user_id = ? ORDER BY created_at DESC LIMIT 200`;
+      params = [userId];
+    } else if (caseId) {
+      sql = `SELECT * FROM audit_logs WHERE case_id = ? ORDER BY created_at DESC LIMIT 200`;
+      params = [caseId];
     }
 
-    return res.json({ success: true, caseId: cleanId, message: 'Case deleted from database.' });
+    const d1Logs = await d1Query(sql, params);
+    let logs = (d1Logs.success && Array.isArray(d1Logs.results) && d1Logs.results.length > 0)
+      ? d1Logs.results
+      : getLocalStore('audit_logs', []);
+
+    if (userId) {
+      logs = logs.filter(l => (l.user_id || l.userId) === userId);
+    }
+    if (caseId) {
+      logs = logs.filter(l => (l.case_id || l.caseId) === caseId);
+    }
+
+    return res.json(logs);
+  } catch (err) {
+    const localLogs = getLocalStore('audit_logs', []);
+    return res.json(localLogs);
+  }
+});
+
+app.post('/api/audit-logs', async (req, res) => {
+  try {
+    const { userId, caseId, actorName, actorRole, action, details } = req.body;
+    const logId = `LOG-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const newLog = {
+      id: logId,
+      user_id: userId || null,
+      userId: userId || null,
+      case_id: caseId || null,
+      caseId: caseId || null,
+      actor_name: actorName || 'System',
+      actorName: actorName || 'System',
+      actor_role: actorRole || 'client',
+      actorRole: actorRole || 'client',
+      action: action || 'ACTIVITY',
+      details: details || '',
+      created_at: new Date().toISOString()
+    };
+
+    const localLogs = getLocalStore('audit_logs', []);
+    saveLocalStore('audit_logs', [newLog, ...localLogs.slice(0, 499)]);
+
+    d1Query(
+      `INSERT INTO audit_logs (id, user_id, case_id, actor_name, actor_role, action, details)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [logId, userId || null, caseId || null, actorName || 'System', actorRole || 'client', action || 'ACTIVITY', details || '']
+    ).catch(console.warn);
+
+    return res.json({ success: true, log: newLog });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1682,7 +2195,10 @@ app.delete('/api/cases/:caseId', async (req, res) => {
 app.delete('/api/documents/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    await d1Query(`DELETE FROM documents WHERE id = ?`, [id]);
+    const localDocs = getLocalStore('documents', []);
+    saveLocalStore('documents', localDocs.filter(d => d.id !== id));
+
+    d1Query(`DELETE FROM documents WHERE id = ?`, [id]).catch(console.warn);
     return res.json({ success: true, id, message: 'Document deleted.' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -1696,40 +2212,45 @@ app.put('/api/documents/:id/verify', async (req, res) => {
     const { status, feedback, note, caseId } = req.body;
     const resolvedNote = feedback || note || '';
 
-    await d1Query(
+    // Update in local documents store
+    const localDocs = getLocalStore('documents', []);
+    const docIdx = localDocs.findIndex(d => d.id === id);
+    if (docIdx >= 0) {
+      localDocs[docIdx] = { ...localDocs[docIdx], status, note: resolvedNote };
+      saveLocalStore('documents', localDocs);
+    }
+
+    d1Query(
       `UPDATE documents SET status = ?, note = ? WHERE id = ?`,
       [status, resolvedNote, id]
-    );
+    ).catch(console.warn);
 
     // If document status is set to 'reupload' or 'rejected', send instant rich WhatsApp alert to User
     if (status === 'reupload' || status === 'rejected' || status === 'action_required') {
       try {
-        const docInfoRes = await d1Query(`SELECT name, file_name, case_id, stage_number FROM documents WHERE id = ?`, [id]);
-        const docRow = docInfoRes.results?.[0];
-        const targetCaseId = caseId || docRow?.case_id;
-        if (targetCaseId) {
-          const caseInfoRes = await d1Query(`SELECT * FROM cases WHERE case_id = ?`, [targetCaseId]);
-          const cRow = caseInfoRes.results?.[0];
-          const accRes = await d1Query(`SELECT id, phone, foreign_phone, email FROM accounts WHERE case_id = ? OR LOWER(email) = ? LIMIT 1`, [targetCaseId, cRow?.email?.toLowerCase()]);
-          const acc = accRes.results?.[0];
+        const localCases = getLocalStore('cases', []);
+        const localAccs = getLocalStore('accounts', []);
+        const docRow = localDocs[docIdx];
+        const targetCaseId = caseId || docRow?.case_id || docRow?.caseId;
+        const cRow = localCases.find(c => (c.caseId || c.case_id) === targetCaseId);
+        const acc = localAccs.find(a => (a.caseId || a.case_id) === targetCaseId || (cRow?.email && (a.email || '').toLowerCase() === cRow.email.toLowerCase()));
 
-          if (cRow || acc) {
-            const userPhone = acc?.phone || acc?.foreign_phone || cRow?.phone || cRow?.foreign_phone || cRow?.romanian_phone;
-            const userName = cRow?.client_name || `${cRow?.first_name || ''} ${cRow?.last_name || ''}`.trim() || 'Valued Client';
-            const docTitle = docRow?.name || docRow?.file_name || 'Statutory Checklist Document';
-            const stageNum = docRow?.stage_number || 1;
-            const userId = acc?.id || cRow?.id || 'UID-2026';
+        if (cRow || acc) {
+          const userPhone = acc?.phone || acc?.foreignPhone || cRow?.phone || cRow?.foreignPhone || cRow?.romanianPhone;
+          const userName = cRow?.clientName || `${cRow?.firstName || ''} ${cRow?.lastName || ''}`.trim() || 'Valued Client';
+          const docTitle = docRow?.name || docRow?.fileName || 'Statutory Checklist Document';
+          const stageNum = docRow?.stageNumber || docRow?.stage_number || 1;
+          const userId = acc?.id || acc?.userId || cRow?.id || 'UID-2026';
 
-            notifyUserDocReupload({
-              phone: userPhone,
-              userName,
-              docTitle,
-              stageNumber: stageNum,
-              reason: resolvedNote || 'Document unclear, blurred, cropped, or expired. Please upload a fresh copy.',
-              caseId: targetCaseId,
-              userId
-            }).catch(err => console.warn('WhatsApp Doc Reupload alert note:', err.message));
-          }
+          notifyUserDocReupload({
+            phone: userPhone,
+            userName,
+            docTitle,
+            stageNumber: stageNum,
+            reason: resolvedNote || 'Document unclear, blurred, cropped, or expired. Please upload a fresh copy.',
+            caseId: targetCaseId,
+            userId
+          }).catch(err => console.warn('WhatsApp Doc Reupload alert note:', err.message));
         }
       } catch (waErr) {
         console.warn('Doc reupload WhatsApp trigger note:', waErr.message);
@@ -1748,14 +2269,12 @@ app.post('/api/cases/:caseId/payment-slip', async (req, res) => {
     const { caseId } = req.params;
     const { stageNumber, referenceNo, clientEmail, clientName } = req.body;
 
-    // Update case stage in D1
-    const caseRes = await d1Query(`SELECT stages, email, client_name FROM cases WHERE case_id = ?`, [caseId]);
-    if (caseRes.results && caseRes.results[0]) {
-      let stagesList = [];
-      try {
-        stagesList = typeof caseRes.results[0].stages === 'string' ? JSON.parse(caseRes.results[0].stages) : (caseRes.results[0].stages || []);
-      } catch(e) {}
+    const localCases = getLocalStore('cases', []);
+    const cIdx = localCases.findIndex(c => (c.caseId || c.case_id) === caseId);
+    let targetCase = cIdx >= 0 ? localCases[cIdx] : null;
 
+    if (targetCase) {
+      const stagesList = safeParseArray(targetCase.stages, []);
       const updatedStages = stagesList.map(stg => {
         if (stg.number === Number(stageNumber || 6)) {
           return {
@@ -1767,12 +2286,44 @@ app.post('/api/cases/:caseId/payment-slip', async (req, res) => {
         }
         return stg;
       });
+      localCases[cIdx].stages = updatedStages;
+      saveLocalStore('cases', localCases);
+      
+      d1Query(`UPDATE cases SET stages = ? WHERE case_id = ?`, [JSON.stringify(updatedStages), caseId]).catch(console.warn);
 
-      await d1Query(`UPDATE cases SET stages = ? WHERE case_id = ?`, [JSON.stringify(updatedStages), caseId]);
+      const cEmail = clientEmail || targetCase.email;
+      const cName = clientName || targetCase.clientName || targetCase.client_name;
+      const userPhone = targetCase.phone || targetCase.foreignPhone || targetCase.romanianPhone;
+      const uId = targetCase.userId || targetCase.id || 'UID-2026';
 
-      const cEmail = clientEmail || caseRes.results[0].email;
-      const cName = clientName || caseRes.results[0].client_name;
-      sendAdminPaymentSlipAlert(cEmail, cName, caseId, stageNumber || 6, referenceNo).catch(console.warn);
+      // 1. Email alerts (Admin + Client)
+      if (cEmail && cEmail.includes('@')) {
+        sendAdminPaymentSlipAlert(cEmail, cName, caseId, stageNumber || 6, referenceNo).catch(console.warn);
+        sendPaymentSlipReceivedEmail(cEmail, cName, caseId, stageNumber || 6, referenceNo).catch(console.warn);
+      }
+
+      // 2. WhatsApp alerts (Admin + Client)
+      try {
+        notifyAdminOnPaymentSlip({
+          clientName: cName,
+          caseId,
+          userId: uId,
+          referenceNo: referenceNo || 'TXN-PAID',
+          stageNumber: stageNumber || 6
+        }).catch(console.warn);
+
+        if (userPhone) {
+          notifyUserOnPaymentSlip({
+            phone: userPhone,
+            clientName: cName,
+            caseId,
+            referenceNo: referenceNo || 'TXN-PAID',
+            stageNumber: stageNumber || 6
+          }).catch(console.warn);
+        }
+      } catch (waErr) {
+        console.warn('Payment slip WhatsApp dispatch note:', waErr.message);
+      }
     }
 
     return res.json({ success: true, message: 'Payment slip received and admin notified.' });
@@ -1787,13 +2338,12 @@ app.post('/api/cases/:caseId/messages', async (req, res) => {
     const { caseId } = req.params;
     const { sender, senderRole, text, subject, clientEmail, clientName } = req.body;
 
-    const caseRes = await d1Query(`SELECT messages, email, client_name FROM cases WHERE case_id = ?`, [caseId]);
-    if (caseRes.results && caseRes.results[0]) {
-      let msgs = [];
-      try {
-        msgs = typeof caseRes.results[0].messages === 'string' ? JSON.parse(caseRes.results[0].messages) : (caseRes.results[0].messages || []);
-      } catch(e) {}
+    const localCases = getLocalStore('cases', []);
+    const cIdx = localCases.findIndex(c => (c.caseId || c.case_id) === caseId);
+    let targetCase = cIdx >= 0 ? localCases[cIdx] : null;
 
+    if (targetCase) {
+      let msgs = safeParseArray(targetCase.messages, []);
       const newMsg = {
         id: `msg-${Date.now()}`,
         sender: sender || 'Client',
@@ -1804,12 +2354,29 @@ app.post('/api/cases/:caseId/messages', async (req, res) => {
         status: 'delivered'
       };
       msgs.push(newMsg);
-      await d1Query(`UPDATE cases SET messages = ? WHERE case_id = ?`, [JSON.stringify(msgs), caseId]);
+      localCases[cIdx].messages = msgs;
+      saveLocalStore('cases', localCases);
+
+      d1Query(`UPDATE cases SET messages = ? WHERE case_id = ?`, [JSON.stringify(msgs), caseId]).catch(console.warn);
+
+      const cEmail = clientEmail || targetCase.email;
+      const cName = clientName || targetCase.clientName || targetCase.client_name;
+      const userPhone = targetCase.phone || targetCase.foreignPhone || targetCase.romanianPhone;
 
       if (senderRole === 'client') {
-        const cEmail = clientEmail || caseRes.results[0].email;
-        const cName = clientName || caseRes.results[0].client_name;
-        sendAdminClientMessageAlert(cEmail, cName, caseId, text, subject).catch(console.warn);
+        // Client sent message -> Alert Admin via Email + WhatsApp
+        if (cEmail) {
+          sendAdminClientMessageAlert(cEmail, cName, caseId, text, subject).catch(console.warn);
+        }
+        notifyAdminOnClientMessage({ clientName: cName, caseId, text, subject }).catch(console.warn);
+      } else if (senderRole === 'admin' || senderRole === 'consultant' || senderRole === 'staff') {
+        // Admin / Counsel replied -> Notify Client via Email + WhatsApp
+        if (cEmail && cEmail.includes('@')) {
+          sendClientReplyEmail(cEmail, cName, caseId, text, subject, sender || 'Elena Radu (Senior Legal Counsel)').catch(console.warn);
+        }
+        if (userPhone) {
+          notifyUserOnAdminMessage({ phone: userPhone, clientName: cName, text, senderName: sender || 'Elena Radu (Senior Legal Counsel)' }).catch(console.warn);
+        }
       }
     }
 
@@ -1818,7 +2385,6 @@ app.post('/api/cases/:caseId/messages', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
-
 
 // =========================================================================
 // 4. DOCUMENT UPLOADS TO CLOUDFLARE R2 OBJECT STORAGE WITH NOTES
@@ -1833,8 +2399,18 @@ app.post('/api/cases/:caseId/documents', upload.single('file'), async (req, res)
     let fileName = file ? file.originalname : (req.body.fileName || `${(docName || 'Document').replace(/\s+/g, '_')}.pdf`);
     const storageKey = `${caseId}/${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
 
-    // 1. Upload to Cloudflare R2 S3 Object Storage (10 GB Free, Zero Egress Fee)
+    // 1. Upload to Cloudflare R2 S3 Object Storage & Save local copy
     if (file) {
+      // Save local disk copy for resilient offline/local serving
+      try {
+        const localFilePath = path.join(UPLOADS_DIR, `${caseId}_${fileName.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+        fs.writeFileSync(localFilePath, file.buffer);
+        const localKeyPath = path.join(UPLOADS_DIR, storageKey.replace(/[\/\\]/g, '_'));
+        fs.writeFileSync(localKeyPath, file.buffer);
+      } catch (diskErr) {
+        console.warn('Local disk file write notice:', diskErr.message);
+      }
+
       try {
         const r2Command = new PutObjectCommand({
           Bucket: R2_BUCKET,
@@ -1843,7 +2419,7 @@ app.post('/api/cases/:caseId/documents', upload.single('file'), async (req, res)
           ContentType: file.mimetype || 'application/pdf',
           Metadata: {
             caseId: String(caseId),
-            docName: String(docName || fileName || 'Document'),
+            docName: String(docName || fileName || 'Document').replace(/[^\x20-\x7E]/g, '_'),
             uploadedBy: String(uploadedBy || 'client')
           }
         });
@@ -1851,6 +2427,7 @@ app.post('/api/cases/:caseId/documents', upload.single('file'), async (req, res)
         publicUrl = `/api/documents/stream?key=${encodeURIComponent(storageKey)}`;
       } catch (r2Err) {
         console.warn('Cloudflare R2 upload warning:', r2Err.message);
+        publicUrl = `/api/documents/stream?key=${encodeURIComponent(storageKey)}`;
       }
     }
 
@@ -1858,61 +2435,62 @@ app.post('/api/cases/:caseId/documents', upload.single('file'), async (req, res)
     const newDocRow = {
       id: newDocId,
       case_id: caseId,
+      caseId: caseId,
       name: docName || fileName || 'Official Document',
       category: category || (stageNumber ? `Stage 0${stageNumber}` : 'General Document'),
       file_name: fileName,
+      fileName: fileName,
       file_url: publicUrl,
+      fileUrl: publicUrl,
       file_size: file ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : (req.body.fileSize || '1.5 MB'),
+      fileSize: file ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : (req.body.fileSize || '1.5 MB'),
       upload_date: new Date().toISOString().split('T')[0],
+      uploadDate: new Date().toISOString().split('T')[0],
       status: uploadedBy === 'admin' ? 'ready_for_download' : 'under_review',
       uploaded_by: uploadedBy || 'client',
+      uploadedBy: uploadedBy || 'client',
       stage_number: stageNumber ? Number(stageNumber) : null,
+      stageNumber: stageNumber ? Number(stageNumber) : null,
       note: (note || '').trim()
     };
 
-    // Check if an existing document with the exact same name or uploadKey exists for this case to avoid duplicate rows
-    const existingDocRes = await d1Query(
-      `SELECT id FROM documents WHERE case_id = ? AND uploaded_by = ? AND name = ? LIMIT 1`,
-      [caseId, uploadedBy || 'client', newDocRow.name]
-    );
-
-    let finalDocId = newDocRow.id;
-    if (existingDocRes.results && existingDocRes.results.length > 0) {
-      finalDocId = existingDocRes.results[0].id;
-      await d1Query(
-        `UPDATE documents SET file_name = ?, file_url = ?, file_size = ?, upload_date = ?, status = ?, note = ? WHERE id = ?`,
-        [newDocRow.file_name, newDocRow.file_url, newDocRow.file_size, newDocRow.upload_date, newDocRow.status, newDocRow.note, finalDocId]
-      );
+    // Save to local documents store
+    const localDocs = getLocalStore('documents', []);
+    const existingDocIdx = localDocs.findIndex(d => (d.caseId || d.case_id) === caseId && (d.uploadedBy || d.uploaded_by) === (uploadedBy || 'client') && d.name === newDocRow.name);
+    if (existingDocIdx >= 0) {
+      localDocs[existingDocIdx] = { ...localDocs[existingDocIdx], ...newDocRow, id: localDocs[existingDocIdx].id };
     } else {
-      await d1Query(
-        `INSERT INTO documents (id, case_id, name, category, file_name, file_url, file_size, upload_date, status, uploaded_by, stage_number, note)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          newDocRow.id,
-          newDocRow.case_id,
-          newDocRow.name,
-          newDocRow.category,
-          newDocRow.file_name,
-          newDocRow.file_url,
-          newDocRow.file_size,
-          newDocRow.upload_date,
-          newDocRow.status,
-          newDocRow.uploaded_by,
-          newDocRow.stage_number,
-          newDocRow.note
-        ]
-      );
+      localDocs.push(newDocRow);
     }
+    saveLocalStore('documents', localDocs);
 
-    // Auto update stage note or stage status in case
-    const caseRes = await d1Query(`SELECT stages, email, client_name FROM cases WHERE case_id = ?`, [caseId]);
-    if (caseRes.results && caseRes.results[0] && caseRes.results[0].stages) {
-      let stagesList = [];
-      try {
-        stagesList = typeof caseRes.results[0].stages === 'string' ? JSON.parse(caseRes.results[0].stages) : caseRes.results[0].stages;
-        if (typeof stagesList === 'string') stagesList = JSON.parse(stagesList);
-      } catch (e) {}
-      
+    // Save to Cloudflare D1
+    d1Query(
+      `INSERT INTO documents (id, case_id, name, category, file_name, file_url, file_size, upload_date, status, uploaded_by, stage_number, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newDocRow.id,
+        newDocRow.case_id,
+        newDocRow.name,
+        newDocRow.category,
+        newDocRow.file_name,
+        newDocRow.file_url,
+        newDocRow.file_size,
+        newDocRow.upload_date,
+        newDocRow.status,
+        newDocRow.uploaded_by,
+        newDocRow.stage_number,
+        newDocRow.note
+      ]
+    ).catch(console.warn);
+
+    // Auto update stage note or stage status in local cases
+    const localCases = getLocalStore('cases', []);
+    const cIdx = localCases.findIndex(c => (c.caseId || c.case_id) === caseId);
+    let targetCase = cIdx >= 0 ? localCases[cIdx] : null;
+
+    if (targetCase && targetCase.stages) {
+      let stagesList = safeParseArray(targetCase.stages, []);
       let hasUpdates = false;
 
       if (Array.isArray(stagesList) && stagesList.length > 0) {
@@ -1952,44 +2530,68 @@ app.post('/api/cases/:caseId/documents', upload.single('file'), async (req, res)
         });
 
         if (hasUpdates || stageNumber) {
-          await d1Query(`UPDATE cases SET stages = ?, updated_at = CURRENT_TIMESTAMP WHERE case_id = ?`, [JSON.stringify(updatedStages), caseId]);
+          localCases[cIdx].stages = updatedStages;
+          saveLocalStore('cases', localCases);
+          d1Query(`UPDATE cases SET stages = ?, updated_at = CURRENT_TIMESTAMP WHERE case_id = ?`, [JSON.stringify(updatedStages), caseId]).catch(console.warn);
         }
       }
     }
 
     // Dispatch email notification to client AND admin notification to ceyloncsrl@gmail.com
-    if (caseRes.results && caseRes.results[0] && caseRes.results[0].email) {
-      const clientEmail = caseRes.results[0].email;
-      const clientName = caseRes.results[0].client_name;
+    if (targetCase && targetCase.email) {
+      const clientEmail = targetCase.email;
+      const clientName = targetCase.clientName || targetCase.client_name;
       
       if (uploadedBy === 'admin') {
         sendDocumentIssuedEmail(clientEmail, clientName, docName || fileName, stageNumber, note).catch(console.warn);
+        if (targetCase.phone || targetCase.foreignPhone) {
+          notifyUserOnDocumentIssued({
+            phone: targetCase.phone || targetCase.foreignPhone,
+            clientName,
+            docName: docName || fileName,
+            stageNumber: stageNumber || 'General',
+            note
+          }).catch(console.warn);
+        }
       } else if (uploadedBy === 'client') {
         sendStageSubmissionEmail(clientEmail, clientName, caseId, stageNumber || 1, docName || fileName, 1).catch(console.warn);
         sendAdminStageSubmissionAlert(clientEmail, clientName, caseId, stageNumber || 1, docName || fileName, 1).catch(console.warn);
         
-        // Dispatch WhatsApp notification to Admin
+        // Dispatch WhatsApp notification to Admin & Client
         try {
-          d1Query(`SELECT id, phone, foreign_phone FROM accounts WHERE case_id = ? LIMIT 1`, [caseId]).then(accRes => {
-            const acc = accRes?.results?.[0];
-            notifyAdminOnStageSubmission({
-              userId: acc?.id || caseId,
+          const localAccs = getLocalStore('accounts', []);
+          const acc = localAccs.find(a => (a.caseId || a.case_id) === caseId);
+          const uPhone = acc?.phone || targetCase.phone || targetCase.foreignPhone;
+
+          notifyAdminOnStageSubmission({
+            userId: acc?.id || acc?.userId || caseId,
+            userName: clientName,
+            caseId,
+            userPhone: uPhone,
+            userEmail: clientEmail,
+            visaType: targetCase.visaType || targetCase.visa_type || 'Romania Immigration',
+            stageNumber: stageNumber || 1,
+            stageTitle: `Stage 0${stageNumber || 1}`,
+            docCount: 1,
+            documentsList: `• ${docName || fileName}`
+          }).catch(e => console.warn('WhatsApp Doc Submission Alert note:', e.message));
+
+          if (uPhone) {
+            notifyUserStageSubmission({
+              userPhone: uPhone,
               userName: clientName,
               caseId,
-              userPhone: acc?.phone || caseRes.results[0].phone || caseRes.results[0].foreign_phone,
-              userEmail: clientEmail,
-              visaType: caseRes.results[0].visa_type || 'Romania Immigration',
+              userId: acc?.id || acc?.userId || caseId,
               stageNumber: stageNumber || 1,
               stageTitle: `Stage 0${stageNumber || 1}`,
-              docCount: 1,
               documentsList: `• ${docName || fileName}`
-            }).catch(e => console.warn('WhatsApp Doc Submission Alert note:', e.message));
-          }).catch(console.warn);
+            }).catch(e => console.warn('WhatsApp Doc Submission Client Receipt note:', e.message));
+          }
         } catch (e) {}
       }
     }
 
-    return res.json({ success: true, document: newDocRow, storageProvider: 'Cloudflare R2 + Cloudflare D1' });
+    return res.json({ success: true, document: newDocRow, storageProvider: 'CCSRL Resilient Store (Cloud + Local)' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2011,48 +2613,65 @@ const handleStageStatusUpdate = async (req, res) => {
       clientName: directName 
     } = req.body;
 
-    const caseRes = await d1Query(`SELECT * FROM cases WHERE case_id = ? OR LOWER(case_id) = LOWER(?)`, [caseId, caseId]);
-    const userCase = caseRes.results?.[0];
-    if (!userCase && !directEmail) return res.status(404).json({ error: 'Case not found' });
-
-    const stagesList = safeParseArray(stages || updatedStages || req.body.updatedStages, null);
-    if (stagesList && stagesList.length > 0 && userCase) {
-      await d1Query(`UPDATE cases SET stages = ?, current_stage_number = ? WHERE case_id = ?`, 
-        [JSON.stringify(stagesList), currentStageNumber || userCase.current_stage_number, userCase.case_id]);
-    }
+    const localCases = getLocalStore('cases', []);
+    const cIdx = localCases.findIndex(c => (c.caseId || c.case_id) === caseId || String(c.caseId || c.case_id).toLowerCase() === String(caseId).toLowerCase());
+    let userCase = cIdx >= 0 ? localCases[cIdx] : null;
 
     const stageNum = Number(stageNumber || 1);
-    
-    // Resolve user's latest account details & email from profile/case tracking
-    const searchEmail = (directEmail || userCase?.email || '').toLowerCase();
-    const accRes = await d1Query(
-      `SELECT id, phone, foreign_phone, romanian_phone, email, first_name, last_name, name, client_name 
-       FROM accounts 
-       WHERE case_id = ? OR LOWER(case_id) = LOWER(?) OR (email IS NOT NULL AND LOWER(email) = ?) 
-       LIMIT 1`, 
-      [caseId, caseId, searchEmail]
-    );
-    const acc = accRes.results?.[0];
+    const statusNorm = String(status || '').toLowerCase().trim();
+    const isApproved = ['approved', 'completed', 'verified', 'passed'].includes(statusNorm);
+    const isRejected = ['rejected', 'action_required', 'needs_revision', 'revision_required', 'declined', 'pending_revision', 'revision', 'changes_requested'].includes(statusNorm);
+    const reasonText = note || remarks || 'Please review counsel instructions and re-upload required certificates.';
 
-    // Priority for Client Email:
-    // 1. Exact Email from Client Profile / Active Tracking Dossier
-    // 2. Email stored in cases table
-    // 3. Email stored in accounts table linked to this case
+    let stagesList = safeParseArray(stages || updatedStages || req.body.updatedStages, null);
+    if (!stagesList && userCase) {
+      const existingStages = safeParseArray(userCase.stages, []);
+      stagesList = existingStages.map(stg => {
+        if (stg.number === stageNum) {
+          return {
+            ...stg,
+            status: isApproved ? 'approved' : (isRejected ? 'action_required' : status),
+            note: note || stg.note,
+            approvedDate: isApproved ? new Date().toISOString().split('T')[0] : stg.approvedDate
+          };
+        }
+        if (isApproved && stg.number === stageNum + 1) {
+          return {
+            ...stg,
+            unlocked: true,
+            status: stg.status === 'locked' ? 'in_progress' : stg.status
+          };
+        }
+        return stg;
+      });
+    }
+
+    if (stagesList && stagesList.length > 0 && userCase) {
+      localCases[cIdx].stages = stagesList;
+      if (currentStageNumber) {
+        localCases[cIdx].currentStageNumber = currentStageNumber;
+      } else if (isApproved && userCase.currentStageNumber <= stageNum) {
+        localCases[cIdx].currentStageNumber = stageNum + 1;
+      }
+      saveLocalStore('cases', localCases);
+      
+      d1Query(`UPDATE cases SET stages = ?, current_stage_number = ? WHERE case_id = ?`, 
+        [JSON.stringify(stagesList), localCases[cIdx].currentStageNumber || 1, userCase.caseId || caseId]).catch(console.warn);
+    }
+
+    const localAccs = getLocalStore('accounts', []);
+    const acc = localAccs.find(a => (a.caseId || a.case_id) === caseId || (userCase?.email && (a.email || '').toLowerCase() === userCase.email.toLowerCase()));
+
     const clientEmail = (directEmail || userCase?.email || acc?.email || '').trim();
-    const clientName = (directName || userCase?.client_name || `${userCase?.first_name || ''} ${userCase?.last_name || ''}`.trim() || acc?.name || acc?.client_name || 'Valued Client').trim();
-    const clientPhone = acc?.phone || acc?.foreign_phone || userCase?.phone || userCase?.foreign_phone || userCase?.romanian_phone;
-    const userId = acc?.id || userCase?.id || 'UID-2026';
+    const clientName = (directName || userCase?.clientName || userCase?.client_name || `${userCase?.firstName || ''} ${userCase?.lastName || ''}`.trim() || acc?.firstName || 'Valued Client').trim();
+    const clientPhone = acc?.phone || userCase?.phone || userCase?.foreignPhone;
+    const userId = acc?.id || acc?.userId || userCase?.id || 'UID-2026';
 
     const currentStageObj = (stagesList || []).find(s => s.number === stageNum) || {};
     const stageTitle = currentStageObj.title || `Stage 0${stageNum}`;
     const nextStageNum = stageNum + 1;
     const nextStageObj = (stagesList || []).find(s => s.number === nextStageNum) || {};
     const nextStageTitle = nextStageObj.title || `Stage 0${nextStageNum}`;
-
-    const statusNorm = String(status || '').toLowerCase().trim();
-    const isApproved = ['approved', 'completed', 'verified', 'passed'].includes(statusNorm);
-    const isRejected = ['rejected', 'action_required', 'needs_revision', 'revision_required', 'declined', 'pending_revision', 'revision', 'changes_requested'].includes(statusNorm);
-    const reasonText = note || remarks || 'Please review counsel instructions and re-upload required certificates.';
 
     if (clientEmail && clientEmail.includes('@')) {
       if (isApproved) {
@@ -2064,8 +2683,6 @@ const handleStageStatusUpdate = async (req, res) => {
           .then(() => console.log(`✉️ [HOSTINGER WEBMAIL] Sent Stage 0${stageNum} ACTION REQUIRED / REJECTION Email directly to Client: ${clientEmail} (${caseId})`))
           .catch(err => console.warn('Stage Rejection Email dispatch note:', err.message));
       }
-    } else {
-      console.warn(`⚠️ [STAGE STATUS] No valid client email found for Case ${caseId}. Email dispatch skipped.`);
     }
 
     // Dispatch Rich WhatsApp Notification to User's Phone
@@ -2113,12 +2730,12 @@ const handleStageSubmit = async (req, res) => {
     const { caseId } = req.params;
     const { stageNumber, stageTitle, documents, notes, userId, userPhone, userName, visaType } = req.body;
 
-    const caseRes = await d1Query(`SELECT * FROM cases WHERE case_id = ? OR LOWER(case_id) = LOWER(?)`, [caseId, caseId]);
-    const userCase = caseRes.results?.[0];
-    if (!userCase) return res.status(404).json({ error: 'Case not found' });
+    const localCases = getLocalStore('cases', []);
+    const cIdx = localCases.findIndex(c => (c.caseId || c.case_id) === caseId || String(c.caseId || c.case_id).toLowerCase() === String(caseId).toLowerCase());
+    let userCase = cIdx >= 0 ? localCases[cIdx] : null;
 
     const stageNum = Number(stageNumber || 1);
-    let stagesList = safeParseArray(userCase.stages, []);
+    let stagesList = safeParseArray(userCase?.stages, []);
     
     stagesList = stagesList.map(stg => {
       if (stg.number === stageNum) {
@@ -2133,18 +2750,26 @@ const handleStageSubmit = async (req, res) => {
       return stg;
     });
 
-    await d1Query(`UPDATE cases SET stages = ?, updated_at = CURRENT_TIMESTAMP WHERE case_id = ?`, [JSON.stringify(stagesList), userCase.case_id]);
+    if (userCase) {
+      localCases[cIdx].stages = stagesList;
+      saveLocalStore('cases', localCases);
+    }
 
-    const accRes = await d1Query(`SELECT id, phone, foreign_phone, email, first_name, last_name FROM accounts WHERE case_id = ? OR LOWER(case_id) = LOWER(?) OR LOWER(email) = ? LIMIT 1`, [caseId, caseId, userCase.email?.toLowerCase()]);
-    const acc = accRes.results?.[0];
-    const resolvedPhone = userPhone || acc?.phone || acc?.foreign_phone || userCase.phone || userCase.foreign_phone;
-    const resolvedName = userName || userCase.client_name || `${userCase.first_name || ''} ${userCase.last_name || ''}`.trim() || 'Valued Client';
-    const resolvedUserId = userId || acc?.id || userCase.id || 'UID-2026';
-    const resolvedVisa = visaType || userCase.visa_type || 'Romania Immigration Dossier';
+    d1Query(`UPDATE cases SET stages = ?, updated_at = CURRENT_TIMESTAMP WHERE case_id = ?`, [JSON.stringify(stagesList), caseId]).catch(console.warn);
+
+    const localAccs = getLocalStore('accounts', []);
+    const acc = localAccs.find(a => (a.caseId || a.case_id) === caseId || (userCase?.email && (a.email || '').toLowerCase() === userCase.email.toLowerCase()));
+
+    const resolvedPhone = userPhone || acc?.phone || userCase?.phone || userCase?.foreignPhone;
+    const resolvedName = userName || userCase?.clientName || `${userCase?.firstName || ''} ${userCase?.lastName || ''}`.trim() || 'Valued Client';
+    const resolvedUserId = userId || acc?.id || acc?.userId || userCase?.id || 'UID-2026';
+    const resolvedVisa = visaType || userCase?.visaType || 'Romania Immigration Dossier';
 
     // 1. Dispatch Email to Admin & Client
-    sendAdminStageSubmissionAlert(userCase.email, resolvedName, caseId, stageNum, stageTitle || `Stage 0${stageNum}`, Array.isArray(documents) ? documents.length : 1).catch(console.warn);
-    sendStageSubmissionEmail(userCase.email, resolvedName, caseId, stageNum, stageTitle || `Stage 0${stageNum}`, Array.isArray(documents) ? documents.length : 1).catch(console.warn);
+    if (userCase?.email) {
+      sendAdminStageSubmissionAlert(userCase.email, resolvedName, caseId, stageNum, stageTitle || `Stage 0${stageNum}`, Array.isArray(documents) ? documents.length : 1).catch(console.warn);
+      sendStageSubmissionEmail(userCase.email, resolvedName, caseId, stageNum, stageTitle || `Stage 0${stageNum}`, Array.isArray(documents) ? documents.length : 1).catch(console.warn);
+    }
 
     // 2. Dispatch Rich WhatsApp Notification to Super Admin (+40 728 744 478)
     notifyAdminOnStageSubmission({
@@ -2152,7 +2777,7 @@ const handleStageSubmit = async (req, res) => {
       userName: resolvedName,
       caseId,
       userPhone: resolvedPhone,
-      userEmail: userCase.email,
+      userEmail: userCase?.email,
       visaType: resolvedVisa,
       stageNumber: stageNum,
       stageTitle: stageTitle || `Stage 0${stageNum}`,
@@ -2171,7 +2796,7 @@ const handleStageSubmit = async (req, res) => {
 app.post('/api/cases/:caseId/submit-stage', handleStageSubmit);
 app.put('/api/cases/:caseId/submit-stage', handleStageSubmit);
 
-// Stream file directly from Cloudflare R2 with download & CORS support
+// Stream file directly from Cloudflare R2 or local disk fallback
 app.get('/api/documents/stream', async (req, res) => {
   try {
     let key = req.query.key;
@@ -2179,20 +2804,37 @@ app.get('/api/documents/stream', async (req, res) => {
     try { key = decodeURIComponent(key); } catch(e){}
     try { if (key.includes('%')) key = decodeURIComponent(key); } catch(e){}
 
-    const getCmd = new GetObjectCommand({
-      Bucket: R2_BUCKET,
-      Key: key
-    });
-    const r2Res = await r2Client.send(getCmd);
     const filename = key.split('/').pop() || 'document.pdf';
     const isDownload = req.query.download === 'true';
-    res.setHeader('Content-Disposition', `${isDownload ? 'attachment' : 'inline'}; filename="${encodeURIComponent(filename)}"`);
-    if (r2Res.ContentType) res.setHeader('Content-Type', r2Res.ContentType);
-    if (r2Res.ContentLength) res.setHeader('Content-Length', r2Res.ContentLength);
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    r2Res.Body.pipe(res);
+
+    // 1. Try Cloudflare R2
+    try {
+      const getCmd = new GetObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: key
+      });
+      const r2Res = await r2Client.send(getCmd);
+      res.setHeader('Content-Disposition', `${isDownload ? 'attachment' : 'inline'}; filename="${encodeURIComponent(filename)}"`);
+      if (r2Res.ContentType) res.setHeader('Content-Type', r2Res.ContentType);
+      if (r2Res.ContentLength) res.setHeader('Content-Length', r2Res.ContentLength);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return r2Res.Body.pipe(res);
+    } catch (r2Err) {
+      // 2. Fallback to local disk file in UPLOADS_DIR
+      const localKeyPath = path.join(UPLOADS_DIR, key.replace(/[\/\\]/g, '_'));
+      const localDirectPath = path.join(UPLOADS_DIR, filename);
+      const targetPath = fs.existsSync(localKeyPath) ? localKeyPath : (fs.existsSync(localDirectPath) ? localDirectPath : null);
+
+      if (targetPath && fs.existsSync(targetPath)) {
+        res.setHeader('Content-Disposition', `${isDownload ? 'attachment' : 'inline'}; filename="${encodeURIComponent(filename)}"`);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return fs.createReadStream(targetPath).pipe(res);
+      }
+    }
+
+    return res.status(404).json({ error: 'File not found on Cloudflare R2 or local server' });
   } catch (e) {
-    return res.status(404).json({ error: 'File not found on Cloudflare R2' });
+    return res.status(500).json({ error: e.message });
   }
 });
 
@@ -2200,33 +2842,53 @@ app.get('/api/documents/stream', async (req, res) => {
 app.get('/api/documents/:id/download', async (req, res) => {
   try {
     const { id } = req.params;
-    const docRes = await d1Query('SELECT * FROM documents WHERE id = ?', [id]);
-    let doc = docRes.results?.[0];
+    const localDocs = getLocalStore('documents', []);
+    let doc = localDocs.find(d => d.id === id || d.name === id || d.fileName === id || d.file_name === id);
+    
     if (!doc) {
-      const fallbackRes = await d1Query('SELECT * FROM documents WHERE name = ? OR file_name = ? LIMIT 1', [id, id]);
-      doc = fallbackRes.results?.[0];
+      try {
+        const docRes = await d1Query('SELECT * FROM documents WHERE id = ?', [id]);
+        doc = docRes.results?.[0];
+      } catch(e) {}
     }
     if (!doc) return res.status(404).json({ error: 'Document record not found' });
 
-    if (doc.file_url) {
-      let key = doc.file_url.includes('key=') ? doc.file_url.split('key=')[1] : doc.file_url;
+    const filename = doc.file_name || doc.fileName || 'document.pdf';
+    const url = doc.file_url || doc.fileUrl;
+
+    if (url) {
+      let key = url.includes('key=') ? url.split('key=')[1] : url;
       try { key = decodeURIComponent(key); } catch(e){}
       try { if (key.includes('%')) key = decodeURIComponent(key); } catch(e){}
 
-      const getCmd = new GetObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key
-      });
-      const r2Res = await r2Client.send(getCmd);
-      const filename = doc.file_name || 'document.pdf';
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
-      if (r2Res.ContentType) res.setHeader('Content-Type', r2Res.ContentType);
-      if (r2Res.ContentLength) res.setHeader('Content-Length', r2Res.ContentLength);
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      return r2Res.Body.pipe(res);
+      // Try R2
+      try {
+        const getCmd = new GetObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: key
+        });
+        const r2Res = await r2Client.send(getCmd);
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+        if (r2Res.ContentType) res.setHeader('Content-Type', r2Res.ContentType);
+        if (r2Res.ContentLength) res.setHeader('Content-Length', r2Res.ContentLength);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return r2Res.Body.pipe(res);
+      } catch (r2Err) {
+        // Fallback to local file
+        const localKeyPath = path.join(UPLOADS_DIR, key.replace(/[\/\\]/g, '_'));
+        const localDirectPath = path.join(UPLOADS_DIR, filename);
+        const caseFilePath = path.join(UPLOADS_DIR, `${doc.caseId || doc.case_id}_${filename}`);
+        const targetPath = fs.existsSync(localKeyPath) ? localKeyPath : (fs.existsSync(caseFilePath) ? caseFilePath : (fs.existsSync(localDirectPath) ? localDirectPath : null));
+
+        if (targetPath && fs.existsSync(targetPath)) {
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          return fs.createReadStream(targetPath).pipe(res);
+        }
+      }
     }
 
-    return res.status(404).json({ error: 'File storage key not found' });
+    return res.status(404).json({ error: 'File binary content not found' });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
@@ -2238,46 +2900,54 @@ app.get('/api/cases/:caseId/documents/download', async (req, res) => {
     const { caseId } = req.params;
     let { docId, name, fileName } = req.query;
 
+    const localDocs = getLocalStore('documents', []);
     let doc = null;
     if (docId) {
-      const docRes = await d1Query('SELECT * FROM documents WHERE case_id = ? AND id = ?', [caseId, docId]);
-      doc = docRes.results?.[0];
+      doc = localDocs.find(d => (d.caseId || d.case_id) === caseId && d.id === docId);
     }
     if (!doc && name) {
       try { name = decodeURIComponent(name); } catch(e){}
-      const docRes = await d1Query('SELECT * FROM documents WHERE case_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY id DESC', [caseId, name]);
-      doc = docRes.results?.[0];
-      if (!doc) {
-        const likeRes = await d1Query('SELECT * FROM documents WHERE case_id = ? AND LOWER(name) LIKE ? ORDER BY id DESC', [caseId, `%${name.toLowerCase().trim()}%`]);
-        doc = likeRes.results?.[0];
-      }
+      doc = localDocs.find(d => (d.caseId || d.case_id) === caseId && String(d.name || '').toLowerCase() === String(name).toLowerCase());
     }
     if (!doc && fileName) {
       try { fileName = decodeURIComponent(fileName); } catch(e){}
-      const docRes = await d1Query('SELECT * FROM documents WHERE case_id = ? AND file_name = ? ORDER BY id DESC', [caseId, fileName]);
-      doc = docRes.results?.[0];
+      doc = localDocs.find(d => (d.caseId || d.case_id) === caseId && (d.fileName === fileName || d.file_name === fileName));
     }
     if (!doc) {
-      const docRes = await d1Query('SELECT * FROM documents WHERE case_id = ? ORDER BY id DESC LIMIT 1', [caseId]);
-      doc = docRes.results?.[0];
+      doc = localDocs.find(d => (d.caseId || d.case_id) === caseId);
     }
 
-    if (doc && doc.file_url) {
-      let key = doc.file_url.includes('key=') ? doc.file_url.split('key=')[1] : doc.file_url;
+    if (doc && (doc.file_url || doc.fileUrl)) {
+      const url = doc.file_url || doc.fileUrl;
+      let key = url.includes('key=') ? url.split('key=')[1] : url;
       try { key = decodeURIComponent(key); } catch(e){}
       try { if (key.includes('%')) key = decodeURIComponent(key); } catch(e){}
+      const downloadName = doc.file_name || doc.fileName || fileName || 'document.pdf';
 
-      const getCmd = new GetObjectCommand({
-        Bucket: R2_BUCKET,
-        Key: key
-      });
-      const r2Res = await r2Client.send(getCmd);
-      const downloadName = doc.file_name || fileName || 'document.pdf';
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadName)}"`);
-      if (r2Res.ContentType) res.setHeader('Content-Type', r2Res.ContentType);
-      if (r2Res.ContentLength) res.setHeader('Content-Length', r2Res.ContentLength);
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      return r2Res.Body.pipe(res);
+      try {
+        const getCmd = new GetObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: key
+        });
+        const r2Res = await r2Client.send(getCmd);
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadName)}"`);
+        if (r2Res.ContentType) res.setHeader('Content-Type', r2Res.ContentType);
+        if (r2Res.ContentLength) res.setHeader('Content-Length', r2Res.ContentLength);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return r2Res.Body.pipe(res);
+      } catch (r2Err) {
+        // Fallback to local file
+        const localKeyPath = path.join(UPLOADS_DIR, key.replace(/[\/\\]/g, '_'));
+        const localDirectPath = path.join(UPLOADS_DIR, downloadName);
+        const caseFilePath = path.join(UPLOADS_DIR, `${caseId}_${downloadName}`);
+        const targetPath = fs.existsSync(localKeyPath) ? localKeyPath : (fs.existsSync(caseFilePath) ? caseFilePath : (fs.existsSync(localDirectPath) ? localDirectPath : null));
+
+        if (targetPath && fs.existsSync(targetPath)) {
+          res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(downloadName)}"`);
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          return fs.createReadStream(targetPath).pipe(res);
+        }
+      }
     }
 
     return res.status(404).json({ error: 'Document not found' });
@@ -2295,22 +2965,41 @@ app.post('/api/inquiries', async (req, res) => {
     const phone = (inq.phone || inq.whatsapp || inq.foreignPhone || inq.mobile || '').trim() || 'Not provided';
     const newId = inq.id || `INQ-2026-${Date.now().toString().slice(-4)}`;
     
-    await d1Query(
+    const newInquiry = {
+      id: newId,
+      name: inq.customerName || inq.name || inq.fullName || 'Applicant',
+      email: inq.email || '',
+      phone,
+      visa_type: inq.visaType || inq.visaCategory || inq.service || 'General Inquiry',
+      visaType: inq.visaType || inq.visaCategory || inq.service || 'General Inquiry',
+      message: inq.message || '',
+      status: inq.status || 'New',
+      notes: typeof inq.notes === 'string' ? inq.notes : JSON.stringify(inq.notes || []),
+      assigned_to: inq.assignedTo || inq.assignedConsultant || 'Elena Radu',
+      assignedTo: inq.assignedTo || inq.assignedConsultant || 'Elena Radu',
+      created_at: inq.created_at || inq.createdAt || new Date().toISOString()
+    };
+
+    const localInquiries = getLocalStore('inquiries', []);
+    const updatedInqs = [newInquiry, ...localInquiries.filter(i => i.id !== newId)];
+    saveLocalStore('inquiries', updatedInqs);
+
+    d1Query(
       `INSERT INTO inquiries (id, name, email, phone, visa_type, message, status, notes, assigned_to)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET status = excluded.status, notes = excluded.notes, message = excluded.message, phone = excluded.phone, email = excluded.email`,
       [
         newId,
-        inq.customerName || inq.name || inq.fullName || 'Applicant',
-        inq.email || '',
+        newInquiry.name,
+        newInquiry.email,
         phone,
-        inq.visaType || inq.visaCategory || inq.service || 'General Inquiry',
-        inq.message || '',
-        inq.status || 'New',
-        typeof inq.notes === 'string' ? inq.notes : JSON.stringify(inq.notes || []),
-        inq.assignedTo || inq.assignedConsultant || 'Elena Radu'
+        newInquiry.visa_type,
+        newInquiry.message,
+        newInquiry.status,
+        newInquiry.notes,
+        newInquiry.assigned_to
       ]
-    );
+    ).catch(console.warn);
 
     // Auto-dispatch confirmation email to applicant (if different from admin) AND single lead alert to admin (ceyloncsrl@gmail.com)
     const applicantEmail = (inq.email || '').toLowerCase().trim();
@@ -2331,7 +3020,7 @@ app.post('/api/inquiries', async (req, res) => {
       console.warn('WhatsApp Inquiry dispatch error:', waErr.message);
     }
 
-    return res.json({ success: true, inquiry: { ...inq, id: newId } });
+    return res.json({ success: true, inquiry: newInquiry });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2340,9 +3029,15 @@ app.post('/api/inquiries', async (req, res) => {
 app.get('/api/inquiries', async (req, res) => {
   try {
     const result = await d1Query(`SELECT * FROM inquiries ORDER BY created_at DESC`);
-    return res.json(result.results || []);
+    let list = (result.success && Array.isArray(result.results) && result.results.length > 0)
+      ? result.results
+      : getLocalStore('inquiries', []);
+    
+    saveLocalStore('inquiries', list);
+    return res.json(list);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    const localInqs = getLocalStore('inquiries', []);
+    return res.json(localInqs);
   }
 });
 
@@ -2350,6 +3045,21 @@ app.put('/api/inquiries/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
+
+    const localInqs = getLocalStore('inquiries', []);
+    const idx = localInqs.findIndex(i => i.id === id || String(i.id).toLowerCase() === String(id).toLowerCase());
+    if (idx >= 0) {
+      localInqs[idx] = {
+        ...localInqs[idx],
+        ...updates,
+        status: updates.status !== undefined ? updates.status : localInqs[idx].status,
+        notes: updates.notes !== undefined ? (typeof updates.notes === 'string' ? updates.notes : JSON.stringify(updates.notes)) : localInqs[idx].notes,
+        assigned_to: updates.assignedTo || updates.assigned_to || localInqs[idx].assigned_to,
+        assignedTo: updates.assignedTo || updates.assigned_to || localInqs[idx].assignedTo
+      };
+      saveLocalStore('inquiries', localInqs);
+    }
+
     const fields = [];
     const params = [];
 
@@ -2367,7 +3077,7 @@ app.put('/api/inquiries/:id', async (req, res) => {
     if (fields.length > 0) {
       params.push(id);
       params.push(id);
-      await d1Query(`UPDATE inquiries SET ${fields.join(', ')} WHERE id = ? OR LOWER(id) = LOWER(?)`, params);
+      d1Query(`UPDATE inquiries SET ${fields.join(', ')} WHERE id = ? OR LOWER(id) = LOWER(?)`, params).catch(console.warn);
     }
     return res.json({ success: true, id });
   } catch (err) {
@@ -2377,7 +3087,8 @@ app.put('/api/inquiries/:id', async (req, res) => {
 
 app.delete('/api/inquiries', async (req, res) => {
   try {
-    await d1Query(`DELETE FROM inquiries`);
+    saveLocalStore('inquiries', []);
+    d1Query(`DELETE FROM inquiries`).catch(console.warn);
     return res.json({ success: true, message: 'All inquiries wiped from database.' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -2387,7 +3098,10 @@ app.delete('/api/inquiries', async (req, res) => {
 app.delete('/api/inquiries/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    await d1Query(`DELETE FROM inquiries WHERE id = ? OR LOWER(id) = LOWER(?)`, [id, id]);
+    const localInqs = getLocalStore('inquiries', []);
+    saveLocalStore('inquiries', localInqs.filter(i => i.id !== id && String(i.id).toLowerCase() !== String(id).toLowerCase()));
+
+    d1Query(`DELETE FROM inquiries WHERE id = ? OR LOWER(id) = LOWER(?)`, [id, id]).catch(console.warn);
     return res.json({ success: true, id, message: 'Inquiry deleted permanently.' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -2405,25 +3119,29 @@ app.get('/api/cms', async (req, res) => {
       try {
         config = JSON.parse(result.results[0].config);
       } catch (e) {}
+      saveLocalStore('cms', config);
       return res.json({ success: true, config });
     }
-    return res.json({ success: true, config: null });
+    const localCms = getLocalStore('cms', null);
+    return res.json({ success: true, config: localCms });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    const localCms = getLocalStore('cms', null);
+    return res.json({ success: true, config: localCms });
   }
 });
 
 app.post('/api/cms', async (req, res) => {
   try {
     const { config } = req.body;
+    saveLocalStore('cms', config || {});
     const configStr = typeof config === 'string' ? config : JSON.stringify(config || {});
-    await d1Query(
+    d1Query(
       `INSERT INTO cms_config (id, config, updated_at) 
        VALUES ('global', ?, CURRENT_TIMESTAMP)
        ON CONFLICT(id) DO UPDATE SET config = excluded.config, updated_at = CURRENT_TIMESTAMP`,
       [configStr]
-    );
-    return res.json({ success: true, message: 'CMS & Global Settings saved to Cloudflare D1.' });
+    ).catch(console.warn);
+    return res.json({ success: true, message: 'CMS & Global Settings saved to CCSRL Database.' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2453,13 +3171,10 @@ app.post('/api/email/send-direct', async (req, res) => {
 
     // If caseId is provided, also record message into Cloudflare D1 cases table
     if (caseId) {
-      const caseRes = await d1Query(`SELECT messages FROM cases WHERE case_id = ?`, [caseId]);
-      if (caseRes.results && caseRes.results[0]) {
-        let msgs = [];
-        try {
-          msgs = typeof caseRes.results[0].messages === 'string' ? JSON.parse(caseRes.results[0].messages) : (caseRes.results[0].messages || []);
-        } catch(e) {}
-        
+      const localCases = getLocalStore('cases', []);
+      const cIdx = localCases.findIndex(c => (c.caseId || c.case_id) === caseId);
+      if (cIdx >= 0) {
+        let msgs = safeParseArray(localCases[cIdx].messages, []);
         const newMsg = {
           id: `msg-${Date.now()}`,
           sender: adminSenderName || 'Elena Radu (Senior Legal Counsel)',
@@ -2471,7 +3186,9 @@ app.post('/api/email/send-direct', async (req, res) => {
           status: 'delivered'
         };
         msgs.push(newMsg);
-        await d1Query(`UPDATE cases SET messages = ? WHERE case_id = ?`, [JSON.stringify(msgs), caseId]);
+        localCases[cIdx].messages = msgs;
+        saveLocalStore('cases', localCases);
+        d1Query(`UPDATE cases SET messages = ? WHERE case_id = ?`, [JSON.stringify(msgs), caseId]).catch(console.warn);
       }
     }
 

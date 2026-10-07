@@ -610,3 +610,198 @@ _CCSRL Romania Legal Bureau_
   return sendWhatsAppMessage(phone, message);
 }
 
+/**
+ * 9. Stage Submission Receipt -> Send to Client's WhatsApp
+ */
+export async function notifyUserStageSubmission(submissionData = {}) {
+  const phone = submissionData.userPhone || submissionData.phone || submissionData.foreignPhone || submissionData.romanianPhone || submissionData.whatsapp;
+  if (!phone) return { success: false, error: 'User phone missing' };
+
+  const name = submissionData.userName || submissionData.clientName || 'Valued Client';
+  const caseId = submissionData.caseId || 'Active Case';
+  const userId = submissionData.userId || '';
+  const stageNum = Number(submissionData.stageNumber || 1);
+  const stageTitle = submissionData.stageTitle || `Stage 0${stageNum}`;
+  const docNames = submissionData.documentsList || (Array.isArray(submissionData.documents) ? submissionData.documents.map(d => `• ${d.name || d.fileName || 'Document'}`).join('\n') : '• Statutory Submission Documents');
+  const timeStr = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+
+  const message = 
+`🏛️ *CCSRL ROMANIA IMMIGRATION PLATFORM*
+📥 *STAGE SUBMISSION RECEIPT & ACKNOWLEDGEMENT*
+
+Dear *${name}*,
+
+We have successfully received your submission for *Stage 0${stageNum}: ${stageTitle}*.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📁 *Case Reference*: ${caseId}
+${userId ? `🆔 *User ID*: ${userId}\n` : ''}📑 *Milestone*: Stage 0${stageNum} – ${stageTitle}
+⏰ *Submission Timestamp*: ${timeStr}
+
+📄 *Received Documents*:
+${docNames}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚖️ *Current Status*: Under Legal Review
+Our European migration compliance team has initiated the verification of your submitted certificates. You will receive an instant notification as soon as verification is confirmed.
+
+🔗 *Client Portal*: http://localhost:3000
+_CCSRL Romania Legal & Immigration Bureau_`;
+
+  console.log(`[WhatsApp] 📤 Dispatching Stage 0${stageNum} Submission Receipt to Client at ${phone}...`);
+  return sendWhatsAppMessage(phone, message);
+}
+
+/**
+ * 10. Embassy Fee Payment Slip -> Alert Admin WhatsApp (+40 728 744 478)
+ */
+export async function notifyAdminOnPaymentSlip(paymentData = {}) {
+  const name = paymentData.clientName || 'Client';
+  const caseId = paymentData.caseId || 'CASE-2026';
+  const userId = paymentData.userId || '';
+  const refNo = paymentData.referenceNo || 'TXN-PAID';
+  const stageNum = paymentData.stageNumber || 6;
+  const timeStr = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+
+  const message = 
+`🏛️ *CCSRL ROMANIA IMMIGRATION PLATFORM*
+💰 *NEW EMBASSY FEE PAYMENT SLIP SUBMITTED* 🧾
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👤 *Applicant*: ${name}
+📁 *Case ID*: ${caseId}
+${userId ? `🆔 *User ID*: ${userId}\n` : ''}📑 *Stage*: Stage 0${stageNum} – Embassy Certification Fees
+💳 *Transaction Reference*: *${refNo}*
+⏰ *Submission Date*: ${timeStr}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚖️ *Required Action*:
+Please review the uploaded bank transfer slip / card receipt in Admin CRM Customer 360 and confirm payment approval to unlock consular appointments.
+
+🔗 *Admin Customer 360*: http://localhost:3000
+_CCSRL Romania Financial & Legal Directorate_`;
+
+  console.log(`[WhatsApp] 📢 Dispatching Payment Slip Alert for ${name} (${caseId}) to Admin...`);
+  return sendWhatsAppMessage(ADMIN_PHONE, message);
+}
+
+/**
+ * 11. Embassy Fee Payment Slip Receipt -> Send to Client's WhatsApp
+ */
+export async function notifyUserOnPaymentSlip(paymentData = {}) {
+  const phone = paymentData.phone || paymentData.foreignPhone || paymentData.userPhone;
+  if (!phone) return { success: false, error: 'User phone missing' };
+
+  const name = paymentData.clientName || 'Valued Client';
+  const caseId = paymentData.caseId || 'CASE-2026';
+  const refNo = paymentData.referenceNo || 'TXN-PAID';
+  const stageNum = paymentData.stageNumber || 6;
+
+  const message = 
+`🏛️ *CCSRL ROMANIA IMMIGRATION PLATFORM*
+🧾 *PAYMENT RECEIPT ACKNOWLEDGEMENT*
+
+Dear *${name}*,
+
+Your Embassy Certification Fee payment receipt for *Stage 0${stageNum}* has been received.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📁 *Case ID*: ${caseId}
+💳 *Transaction Reference*: *${refNo}*
+📋 *Status*: Pending Financial & Legal Verification
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Our billing and legal counsel desk is confirming the transaction with the consular authority. Once verified, Stage 07 superlegalization directives will be unlocked immediately.
+
+🔗 *Client Portal*: http://localhost:3000
+_CCSRL Romania Legal Bureau_`;
+
+  console.log(`[WhatsApp] 📤 Dispatching Payment Slip Acknowledgement to Client at ${phone}...`);
+  return sendWhatsAppMessage(phone, message);
+}
+
+/**
+ * 12. Case Message / Chat -> Alert Admin WhatsApp
+ */
+export async function notifyAdminOnClientMessage(msgData = {}) {
+  const name = msgData.clientName || 'Client';
+  const caseId = msgData.caseId || 'CASE-2026';
+  const text = msgData.text || '';
+  const subject = msgData.subject || 'Case Support Inquiry';
+
+  const message = 
+`🏛️ *CCSRL ROMANIA IMMIGRATION PLATFORM*
+💬 *NEW CLIENT CASE MESSAGE RECEIVED* 📩
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👤 *Client*: ${name}
+📁 *Case Reference*: ${caseId}
+📌 *Subject*: ${subject}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📝 *Message*:
+"${text}"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔗 *Reply via Admin Messages Hub*: http://localhost:3000
+_CCSRL Legal Consultation Desk_`;
+
+  return sendWhatsAppMessage(ADMIN_PHONE, message);
+}
+
+/**
+ * 13. Case Message Reply -> Send to Client's WhatsApp
+ */
+export async function notifyUserOnAdminMessage(msgData = {}) {
+  const phone = msgData.phone || msgData.foreignPhone || msgData.userPhone;
+  if (!phone) return { success: false, error: 'User phone missing' };
+
+  const name = msgData.clientName || 'Valued Client';
+  const text = msgData.text || '';
+  const sender = msgData.senderName || 'Elena Radu (Senior Legal Counsel)';
+
+  const message = 
+`🏛️ *CCSRL ROMANIA IMMIGRATION PLATFORM*
+⚖️ *MESSAGE FROM YOUR LEGAL COUNSEL* 📜
+
+Dear *${name}*,
+
+You have received an official legal message regarding your Romanian immigration dossier from *${sender}*:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"${text}"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You can reply directly in your Client Portal or respond to this WhatsApp desk.
+
+🔗 *Client Portal*: http://localhost:3000
+_CCSRL Romania Legal Bureau_`;
+
+  return sendWhatsAppMessage(phone, message);
+}
+
+/**
+ * 14. Document Issued -> Send to Client's WhatsApp
+ */
+export async function notifyUserOnDocumentIssued(docData = {}) {
+  const phone = docData.phone || docData.foreignPhone || docData.userPhone;
+  if (!phone) return { success: false, error: 'User phone missing' };
+
+  const name = docData.clientName || 'Valued Client';
+  const docName = docData.docName || docData.fileName || 'Official Immigration Document';
+  const stageNum = docData.stageNumber || 'General';
+  const note = docData.note ? `\n📝 *Counsel Note*: "${docData.note}"` : '';
+
+  const message = 
+`🏛️ *CCSRL ROMANIA IMMIGRATION PLATFORM*
+📑 *OFFICIAL DOCUMENT ISSUED FOR DOWNLOAD* 📥
+
+Dear *${name}*,
+
+An official legal document has been generated and uploaded to your case file for *Stage 0${stageNum}*:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 *Document*: *${docName}*${note}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Please log in to your Client Portal to download and review the official certified document.
+
+🔗 *Download Document*: http://localhost:3000
+_CCSRL Romania Legal Bureau_`;
+
+  return sendWhatsAppMessage(phone, message);
+}
+

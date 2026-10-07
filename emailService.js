@@ -674,6 +674,8 @@ export async function sendInquiryReceivedEmail(inquiryData) {
   return await sendMailSafe(inquiryData.email, `[CCSRL] Inquiry Received [${inqId}]: ${visaType}`, html, true);
 }
 
+export const sendInquiryAcknowledgementEmail = sendInquiryReceivedEmail;
+
 /**
  * 5b. Send Admin New Inquiry Alert to ceyloncsrl@gmail.com
  */
@@ -1148,6 +1150,113 @@ export async function sendAdminCredentialsEmail({ email, username, password, fir
   `;
 
   return await sendMailSafe(email, `🔐 CCSRL Administrative Access Granted – Officer Credentials (${displayRole})`, html, true);
+}
+
+/**
+ * 14. Send Embassy Payment Slip Receipt Email to Client
+ */
+export async function sendPaymentSlipReceivedEmail(to, clientName, caseId, stageNumber = 6, referenceNo = 'TXN-PAID') {
+  const time = new Date().toLocaleString('en-US', { timeZone: 'Europe/Bucharest', dateStyle: 'full', timeStyle: 'short' });
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="background-color: #0f172a; margin: 0; padding: 24px 12px; font-family: 'Segoe UI', Arial, sans-serif;">
+      <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); border: 1px solid #334155; overflow: hidden;">
+        ${getEmailHeader('Embassy Certification Fee Payment Received')}
+
+        <div style="padding: 28px 24px; color: #1e293b; font-size: 14px; line-height: 1.6;">
+          <p style="margin: 0 0 14px; color: #475569;">
+            Dear <strong>${clientName}</strong>,<br/>
+            We have received your statutory embassy fee payment receipt for <strong>Stage 0${stageNumber}: Get Certified from Embassy</strong> under dossier <strong>${caseId}</strong>.
+          </p>
+
+          <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 18px; margin: 18px 0;">
+            <div style="font-size: 11px; text-transform: uppercase; font-weight: 800; color: #166534; margin-bottom: 10px; letter-spacing: 0.5px;">🧾 Payment &amp; Milestone Particulars</div>
+            
+            <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 5px 0; color: #64748b; width: 40%;">Case Dossier ID:</td>
+                <td style="font-weight: 800; color: #002B7F; font-family: monospace;">${caseId}</td>
+              </tr>
+              <tr>
+                <td style="padding: 5px 0; color: #64748b;">Transaction Reference:</td>
+                <td style="font-weight: 800; font-family: monospace; color: #0f172a;">${referenceNo}</td>
+              </tr>
+              <tr>
+                <td style="padding: 5px 0; color: #64748b;">Target Milestone:</td>
+                <td style="font-weight: 700; color: #b45309;">Stage 0${stageNumber} – Embassy Certification</td>
+              </tr>
+              <tr>
+                <td style="padding: 5px 0; color: #64748b;">Review Status:</td>
+                <td><span style="background: #fef3c7; color: #92400e; padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 11px;">Pending Financial Audit</span></td>
+              </tr>
+              <tr>
+                <td style="padding: 5px 0; color: #64748b;">Recorded Date:</td>
+                <td style="color: #475569;">${time}</td>
+              </tr>
+            </table>
+          </div>
+
+          <p style="font-size: 13px; color: #475569;">
+            Our legal compliance and finance desk is actively verifying the bank transmission. Upon confirmation, Stage 07 superlegalization directives and appointment booking will be activated.
+          </p>
+
+          <div style="text-align: center; margin: 24px 0 16px;">
+            <a href="https://ccsrl.ro/client-portal" style="display: inline-block; background: #002B7F; color: #ffffff; padding: 12px 32px; border-radius: 8px; font-weight: 800; text-decoration: none; font-size: 14px;">
+              Access Client Portal &rarr;
+            </a>
+          </div>
+        </div>
+
+        ${getEmailFooter()}
+      </div>
+    </body>
+    </html>
+  `;
+
+  return await sendMailSafe(to, `[CCSRL] Payment Receipt Acknowledged – Dossier ${caseId} (Stage 0${stageNumber})`, html, true);
+}
+
+/**
+ * 15. Send Legal Counsel Reply Email to Client
+ */
+export async function sendClientReplyEmail(to, clientName, caseId, text, subject = 'Legal Counsel Communication', senderName = 'Elena Radu (Senior European Legal Counsel)') {
+  const formattedMsg = text ? text.replace(/\n/g, '<br/>') : '';
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="background-color: #0f172a; margin: 0; padding: 24px 12px; font-family: 'Segoe UI', Arial, sans-serif;">
+      <div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); border: 1px solid #334155; overflow: hidden;">
+        ${getEmailHeader('Official Legal Communication')}
+
+        <div style="padding: 28px 24px; color: #1e293b; font-size: 14px; line-height: 1.6;">
+          <p style="margin: 0 0 14px; color: #475569;">
+            Dear <strong>${clientName}</strong>,<br/>
+            You have received an official legal communication regarding your Romanian immigration dossier <strong>${caseId}</strong> from <strong>${senderName}</strong>.
+          </p>
+
+          <div style="background: #f8fafc; border-left: 4px solid #002B7F; border-radius: 4px; padding: 16px 20px; margin: 18px 0; font-size: 14px; color: #0f172a;">
+            ${formattedMsg}
+          </div>
+
+          <div style="text-align: center; margin: 24px 0 16px;">
+            <a href="https://ccsrl.ro/client-portal" style="display: inline-block; background: #002B7F; color: #ffffff; padding: 12px 32px; border-radius: 8px; font-weight: 800; text-decoration: none; font-size: 14px;">
+              Reply in Client Portal &rarr;
+            </a>
+          </div>
+        </div>
+
+        ${getEmailFooter()}
+      </div>
+    </body>
+    </html>
+  `;
+
+  return await sendMailSafe(to, `[CCSRL] Legal Communication: ${subject} (${caseId})`, html, true);
 }
 
 
