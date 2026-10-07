@@ -242,8 +242,8 @@ app.post('/api/whatsapp/test', async (req, res) => {
   return res.json(result);
 });
 
-// Dedicated Direct Browser QR Scan Page: http://localhost:5000/whatsapp-scan
-app.get('/whatsapp-scan', (req, res) => {
+// Dedicated Direct Browser QR Scan Page: /whatsapp-scan, /api/whatsapp/qr, /qr
+app.get(['/whatsapp-scan', '/api/whatsapp/qr', '/api/whatsapp-scan', '/qr'], (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html lang="en">
@@ -442,6 +442,53 @@ app.get('/whatsapp-scan', (req, res) => {
     console.warn('Initial admin/schema seed note:', e.message);
   }
 })();
+
+// =========================================================================
+// DATABASE CLEAN & FRESH RE-INITIALIZATION ENDPOINT
+// =========================================================================
+app.all('/api/admin/clean-database', async (req, res) => {
+  try {
+    // 1. Wipe Cloudflare D1 tables
+    await d1Query(`DELETE FROM cases`);
+    await d1Query(`DELETE FROM inquiries`);
+    await d1Query(`DELETE FROM documents`);
+    await d1Query(`DELETE FROM messages`);
+    await d1Query(`DELETE FROM audit_logs`);
+    await d1Query(`DELETE FROM accounts WHERE role != 'admin'`);
+    
+    // Ensure Super Admin remains active
+    await d1Query(
+      `INSERT INTO accounts (user_id, email, password, first_name, last_name, role)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(email) DO UPDATE SET password = excluded.password, role = 'admin', user_id = excluded.user_id`,
+      ['ADMIN-SUPER-THILANKA', 'thilankamahesh09@gmail.com', 'Thilanka2003@', 'Thilanka', 'Mahesh', 'admin']
+    );
+
+    // 2. Wipe Local Storage Fallback Data
+    saveLocalStore('cases', []);
+    saveLocalStore('inquiries', []);
+    saveLocalStore('documents', []);
+    saveLocalStore('messages', []);
+    saveLocalStore('accounts', [
+      {
+        user_id: 'ADMIN-SUPER-THILANKA',
+        email: 'thilankamahesh09@gmail.com',
+        password: 'Thilanka2003@',
+        firstName: 'Thilanka',
+        lastName: 'Mahesh',
+        role: 'admin',
+        status: 'active'
+      }
+    ]);
+
+    return res.json({ 
+      success: true, 
+      message: '🧹 Database cleaned completely & re-initialized fresh from scratch! Super Admin account verified.' 
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // Helper: Generate Strong Unique Lifetime User ID (Immutable Permanent User Identifier UID-2026-XXXX)
 async function generateLifetimeUserId() {
